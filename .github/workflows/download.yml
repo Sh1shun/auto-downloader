@@ -1,0 +1,25 @@
+name: Download file from GitHub and send to Telegram
+
+# Запускаем каждый час
+on:
+  schedule:
+    - cron: '0 * * * *'   # Каждый час в 00 минут
+  workflow_dispatch:      # Чтобы можно было запустить вручную кнопкой
+
+jobs:
+  download-and-send:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Шаг 1: Скачиваем файл
+      - name: Download file
+        run: curl -L -o myfile.txt "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt"
+        # 👆 ЗАМЕНИ ссылку на свою! Используй RAW-ссылку с GitHub.
+      
+      # Шаг 2: Отправляем в Telegram через бота
+      - name: Send to Telegram
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendDocument" \
+            -F "chat_id=${{ secrets.CHAT_ID }}" \
+            -F "document=@myfile.txt" \
+            -F "caption=Файл обновлен в $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
