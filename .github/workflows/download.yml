@@ -14,11 +14,10 @@ jobs:
       
       - name: Send to Telegram
         env:
-          # 👇 Собираем URL полностью в переменную окружения
-          TELEGRAM_URL: "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendDocument"
+          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          # 👇 Используем переменную из окружения
-          curl -s -X POST "$TELEGRAM_URL" \
-            -F "chat_id=${{ secrets.CHAT_ID }}" \
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+            -F "chat_id=${TG_CHAT_ID}" \
             -F "document=@myfile.txt" \
-            -F "caption=Файл обновлен в $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            -F "caption=File updated at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
