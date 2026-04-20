@@ -1,4 +1,4 @@
-name: Download all files and send as album to Telegram
+name: Download and send configs to Telegram
 
 on:
   schedule:
@@ -9,41 +9,47 @@ jobs:
   download-and-send:
     runs-on: ubuntu-latest
     steps:
-      - name: Download all files
-        run: |
-          curl -L -o "1.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt"
-          curl -L -o "2.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt"
-          curl -L -o "3.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt"
-          curl -L -o "4.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-checked.txt"
-          curl -L -o "5.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
+      - name: Download file 1
+        run: curl -L -o "WhiteListsRusMobile(MostHelpful).txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt"
       
-      - name: Send as album (media group)
+      - name: Send file 1
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          # Создаем JSON для медиагруппы из 5 файлов
-          cat > payload.json << 'EOF'
-          {
-            "chat_id": "${TG_CHAT_ID}",
-            "media": [
-              {"type": "document", "media": "attach://1", "caption": ""},
-              {"type": "document", "media": "attach://2", "caption": ""},
-              {"type": "document", "media": "attach://3", "caption": ""},
-              {"type": "document", "media": "attach://4", "caption": ""},
-              {"type": "document", "media": "attach://5", "caption": ""}
-            ]
-          }
-          EOF
-          
-          # Подставляем chat_id в JSON
-          sed -i "s/\${TG_CHAT_ID}/${TG_CHAT_ID}/g" payload.json
-          
-          # Отправляем все 5 файлов одним альбомом
-          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMediaGroup" \
-            -F "payload=@payload.json" \
-            -F "1=@1.txt" \
-            -F "2=@2.txt" \
-            -F "3=@3.txt" \
-            -F "4=@4.txt" \
-            -F "5=@5.txt"
+        run: curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHAT_ID}" -F "document=@WhiteListsRusMobile(MostHelpful).txt"
+
+      - name: Download file 2
+        run: curl -L -o "WhiteListsRusMobile2.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt"
+      
+      - name: Send file 2
+        env:
+          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHAT_ID}" -F "document=@WhiteListsRusMobile2.txt"
+
+      - name: Download file 3
+        run: curl -L -o "WhiteCidrRUAll.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt"
+      
+      - name: Send file 3
+        env:
+          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHAT_ID}" -F "document=@WhiteCidrRUAll.txt"
+
+      - name: Download file 4
+        run: curl -L -o "WhiteCidrRUChecked.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-checked.txt"
+      
+      - name: Send file 4
+        env:
+          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHAT_ID}" -F "document=@WhiteCidrRUChecked.txt"
+
+      - name: Download file 5
+        run: curl -L -o "WhiteSNIRUAll.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
+      
+      - name: Send file 5
+        env:
+          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHAT_ID}" -F "document=@WhiteSNIRUAll.txt"
