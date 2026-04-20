@@ -19,7 +19,7 @@ jobs:
       # Шаг 2: Отправляем в Telegram через бота
       - name: Send to Telegram
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendDocument" \
+          curl -s -X POST "https://api.telegram.org/bot ${{ secrets.BOT_TOKEN }}/sendDocument" \
             -F "chat_id=${{ secrets.CHAT_ID }}" \
             -F "document=@myfile.txt" \
             -F "caption=Файл обновлен в $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
