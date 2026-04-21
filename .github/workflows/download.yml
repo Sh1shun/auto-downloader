@@ -1,8 +1,8 @@
-name: Download and publish only changed configs
+name: Download and send only changed configs with cleanup
 
 on:
   schedule:
-    - cron: '*/10 * * * *'   # Каждые 10 минут
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -12,15 +12,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # КЭШ: Восстанавливаем старые версии файлов (если есть)
-      - name: Restore cached files
+      # КЭШ: Восстанавливаем старые версии файлов и ID сообщений
+      - name: Restore cached data
         id: cache
         uses: actions/cache@v4
         with:
-          path: old_files
-          key: configs-cache
+          path: |
+            old_files
+            message_ids.txt
+          key: configs-cache-v2
 
-      # Скачиваем свежие файлы в новую папку
+      # Скачиваем свежие файлы
       - name: Download fresh files
         run: |
           mkdir -p new_files
@@ -35,7 +37,7 @@ jobs:
           curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # ЛОГИКА: Сравниваем старые и новые файлы
+      # Определяем, какие файлы изменились
       - name: Check for changes
         id: diff
         run: |
@@ -52,22 +54,44 @@ jobs:
           fi
           echo "changed=$CHANGED_FILES" >> $GITHUB_OUTPUT
 
-      # ПУБЛИКАЦИЯ: Отправляем в ТГ только изменившиеся файлы
-      - name: Send only changed files to Telegram
+      # УДАЛЯЕМ старые сообщения из канала (если есть)
+      - name: Delete old messages from channel
+        if: steps.diff.outputs.changed != '' && github.event_name != 'schedule' || steps.diff.outputs.changed != ''
+        env:
+          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          if [ -f "message_ids.txt" ]; then
+            while IFS= read -r msg_id; do
+              if [ -n "$msg_id" ]; then
+                curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
+                  -F "chat_id=${TG_CHAT_ID}" \
+                  -F "message_id=${msg_id}" || true
+              fi
+            done < message_ids.txt
+          fi
+
+      # ОТПРАВЛЯЕМ новые/изменённые файлы и сохраняем их ID
+      - name: Send changed files and save message IDs
         if: steps.diff.outputs.changed != ''
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
+          rm -f message_ids.txt
           for filename in ${{ steps.diff.outputs.changed }}; do
             if [ -f "new_files/$filename" ]; then
-              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
-                -F "document=@new_files/$filename"
+                -F "document=@new_files/$filename")
+              MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+              if [ -n "$MSG_ID" ]; then
+                echo "$MSG_ID" >> message_ids.txt
+              fi
             fi
           done
 
-      # ОБНОВЛЯЕМ КЭШ: Кладем новые файлы поверх старых для будущих сравнений
+      # Обновляем кэш новыми файлами
       - name: Update cache
         run: |
           rm -rf old_files
