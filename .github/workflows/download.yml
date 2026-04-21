@@ -1,4 +1,4 @@
-name: Download and send only changed configs
+name: Download and send only changed configs 
 
 on:
   schedule:
