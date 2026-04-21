@@ -2,7 +2,7 @@ name: Download and send only changed configs
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+  - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
