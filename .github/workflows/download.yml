@@ -1,8 +1,8 @@
-name: Download and send only changed configs 
+name: Download and send only changed configs
 
 on:
   schedule:
-  - cron: '*/5 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -12,20 +12,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # КЭШ: Восстанавливаем старые файлы и ID сообщений
       - name: Restore cached data
         uses: actions/cache@v4
         with:
           path: |
             old_files
             message_ids.txt
-          key: configs-cache-v5
+          key: configs-cache-v6
 
-      # Скачиваем свежие файлы
       - name: Download fresh files
         run: |
           mkdir -p new_files
-          curl -L -o "new_files/WhiteListsRusMobile(MostHelpful).txt" \
+          curl -L -o "new_files/WhiteListsRusMobile_MostHelpful.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt"
           curl -L -o "new_files/WhiteListsRusMobile2.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt"
@@ -36,7 +34,6 @@ jobs:
           curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # ПРОВЕРКА: какие файлы изменились
       - name: Check for changes
         id: diff
         run: |
@@ -49,18 +46,11 @@ jobs:
               fi
             done
           else
-            # Первый запуск — отправляем все файлы
             CHANGED_FILES="all"
           fi
           echo "changed=$CHANGED_FILES" >> $GITHUB_OUTPUT
           echo "Изменённые файлы: $CHANGED_FILES"
 
-      # Если нет изменений — завершаем работу
-      - name: No changes detected
-        if: steps.diff.outputs.changed == ''
-        run: echo "✅ Изменений нет, ничего не отправляем"
-
-      # УДАЛЯЕМ старые сообщения (только если есть изменения)
       - name: Delete old messages
         if: steps.diff.outputs.changed != ''
         env:
@@ -69,13 +59,14 @@ jobs:
         run: |
           if [ -f "message_ids.txt" ]; then
             while IFS= read -r msg_id; do
-              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
-                -F "chat_id=${TG_CHAT_ID}" \
-                -F "message_id=${msg_id}" || true
+              if [ -n "$msg_id" ]; then
+                curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
+                  -F "chat_id=${TG_CHAT_ID}" \
+                  -F "message_id=${msg_id}" || true
+              fi
             done < message_ids.txt
           fi
 
-      # ОТПРАВЛЯЕМ только изменившиеся файлы
       - name: Send changed files
         if: steps.diff.outputs.changed != ''
         env:
@@ -84,31 +75,34 @@ jobs:
         run: |
           rm -f message_ids.txt
           if [ "${{ steps.diff.outputs.changed }}" = "all" ]; then
-            FILES="new_files/*"
+            for filepath in new_files/*; do
+              if [ -f "$filepath" ]; then
+                RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+                  -F "chat_id=${TG_CHAT_ID}" \
+                  -F "document=@$filepath")
+                MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+                if [ -n "$MSG_ID" ]; then
+                  echo "$MSG_ID" >> message_ids.txt
+                fi
+              fi
+            done
           else
-            FILES=""
-            for name in ${{ steps.diff.outputs.changed }}; do
-              FILES="$FILES new_files/$name"
+            for filename in ${{ steps.diff.outputs.changed }}; do
+              filepath="new_files/$filename"
+              if [ -f "$filepath" ]; then
+                RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+                  -F "chat_id=${TG_CHAT_ID}" \
+                  -F "document=@$filepath")
+                MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+                if [ -n "$MSG_ID" ]; then
+                  echo "$MSG_ID" >> message_ids.txt
+                fi
+              fi
             done
           fi
-          
-          for filepath in $FILES; do
-            if [ -f "$filepath" ]; then
-              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
-                -F "chat_id=${TG_CHAT_ID}" \
-                -F "document=@$filepath")
-              MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-              if [ -n "$MSG_ID" ]; then
-                echo "$MSG_ID" >> message_ids.txt
-              fi
-            fi
-          done
 
-      # ОБНОВЛЯЕМ кэш новыми файлами
       - name: Update cache
         if: steps.diff.outputs.changed != ''
         run: |
           rm -rf old_files
           mv new_files old_files
-
-          
