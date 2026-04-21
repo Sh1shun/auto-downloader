@@ -98,9 +98,12 @@ jobs:
       # Сохраняем новый хеш и ID сообщений в репозиторий
       - name: Save hash and message IDs to repo
         if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin https://Sh1shun:${GH_TOKEN}@github.com/Sh1shun/auto-downloader.git
           
           cp new_hash.txt hash.txt
           if [ -f new_msg_ids.txt ]; then
