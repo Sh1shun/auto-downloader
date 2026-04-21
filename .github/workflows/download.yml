@@ -1,4 +1,4 @@
-name: Download and send configs to Telegram
+name: Download and send only changed configs
 
 on:
   schedule:
@@ -6,88 +6,104 @@ on:
   workflow_dispatch:
 
 jobs:
-  download-and-send:
+  check-and-send:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Восстанавливаем ID старых сообщений (если есть)
-      - name: Restore message IDs
-        id: cache
+      # КЭШ: Восстанавливаем старые файлы и ID сообщений
+      - name: Restore cached data
         uses: actions/cache@v4
         with:
-          path: message_ids.txt
-          key: message-ids-cache
+          path: |
+            old_files
+            message_ids.txt
+          key: configs-cache-v4
 
-      # Скачиваем файлы
-      - name: Download files
+      # Скачиваем свежие файлы
+      - name: Download fresh files
         run: |
-          curl -L -o "WhiteListsRusMobile(MostHelpful).txt" \
+          mkdir -p new_files
+          curl -L -o "new_files/WhiteListsRusMobile(MostHelpful).txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt"
-          curl -L -o "WhiteListsRusMobile2.txt" \
+          curl -L -o "new_files/WhiteListsRusMobile2.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt"
-          curl -L -o "WhiteCidrRUAll.txt" \
+          curl -L -o "new_files/WhiteCidrRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt"
-          curl -L -o "WhiteCidrRUChecked.txt" \
+          curl -L -o "new_files/WhiteCidrRUChecked.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-checked.txt"
-          curl -L -o "WhiteSNIRUAll.txt" \
+          curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # Удаляем старые сообщения (только если файл с ID существует)
+      # Проверяем, какие файлы изменились
+      - name: Check for changes
+        id: diff
+        run: |
+          CHANGED_FILES=""
+          if [ -d "old_files" ]; then
+            for file in new_files/*; do
+              filename=$(basename "$file")
+              if [ ! -f "old_files/$filename" ] || ! cmp -s "$file" "old_files/$filename"; then
+                CHANGED_FILES="$CHANGED_FILES $filename"
+              fi
+            done
+          else
+            # Первый запуск — отправляем все файлы
+            CHANGED_FILES="all"
+          fi
+          echo "changed=$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "Изменились: $CHANGED_FILES"
+
+      # Удаляем старые сообщения (если есть)
       - name: Delete old messages
+        if: steps.diff.outputs.changed != ''
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           if [ -f "message_ids.txt" ]; then
-            echo "📤 Удаляем старые сообщения..."
             while IFS= read -r msg_id; do
-              if [ -n "$msg_id" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
-                  -F "chat_id=${TG_CHAT_ID}" \
-                  -F "message_id=${msg_id}" > /dev/null 2>&1
-                echo "Удалено сообщение: $msg_id"
-              fi
+              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
+                -F "chat_id=${TG_CHAT_ID}" \
+                -F "message_id=${msg_id}" || true
             done < message_ids.txt
-          else
-            echo "📭 Сохраненных ID сообщений нет (первый запуск или пустой канал)"
           fi
 
-      # Отправляем ВСЕ файлы (всегда) и сохраняем их ID
-      - name: Send all files and save message IDs
+      # Отправляем только изменившиеся файлы
+      - name: Send changed files
+        if: steps.diff.outputs.changed != ''
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          # Очищаем старый файл с ID
           rm -f message_ids.txt
+          if [ "${{ steps.diff.outputs.changed }}" = "all" ]; then
+            FILES="new_files/*"
+          else
+            FILES=""
+            for name in ${{ steps.diff.outputs.changed }}; do
+              FILES="$FILES new_files/$name"
+            done
+          fi
           
-          # Отправляем каждый файл
-          for file in WhiteListsRusMobile\(MostHelpful\).txt WhiteListsRusMobile2.txt WhiteCidrRUAll.txt WhiteCidrRUChecked.txt WhiteSNIRUAll.txt; do
-            if [ -f "$file" ]; then
-              echo "📤 Отправляем: $file"
+          for filepath in $FILES; do
+            if [ -f "$filepath" ]; then
+              filename=$(basename "$filepath")
+              echo "Отправляем: $filename"
               RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
-                -F "document=@$file")
-              
-              # Извлекаем message_id из ответа
+                -F "document=@$filepath")
               MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
               if [ -n "$MSG_ID" ]; then
                 echo "$MSG_ID" >> message_ids.txt
-                echo "✅ Отправлено, ID: $MSG_ID"
-              else
-                echo "❌ Ошибка при отправке $file"
-                echo "Ответ API: $RESPONSE"
               fi
             fi
           done
-          
-          echo "📝 Сохранено ID сообщений: $(cat message_ids.txt 2>/dev/null | wc -l) шт."
 
-      # Сохраняем ID сообщений в кэш
-      - name: Save message IDs to cache
-        uses: actions/cache@v4
-        with:
-          path: message_ids.txt
-          key: message-ids-cache
+      # Обновляем кэш
+      - name: Update cache
+        if: steps.diff.outputs.changed != ''
+        run: |
+          rm -rf old_files
+          mv new_files old_files
