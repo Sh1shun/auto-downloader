@@ -1,55 +1,74 @@
-name: Download and send configs to Telegram
+name: Download and publish only changed configs
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '*/10 * * * *'   # Каждые 10 минут
   workflow_dispatch:
 
 jobs:
-  download-and-send:
+  check-and-send:
     runs-on: ubuntu-latest
     steps:
-      - name: Download file 1
-        run: curl -L -o "WhiteListsRusMobile(MostHelpful).txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt"
-      
-      - name: Send file 1
-        env:
-          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHAT_ID}" -F "document=@WhiteListsRusMobile(MostHelpful).txt"
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Download file 2
-        run: curl -L -o "WhiteListsRusMobile2.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt"
-      
-      - name: Send file 2
-        env:
-          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHAT_ID}" -F "document=@WhiteListsRusMobile2.txt"
+      # КЭШ: Восстанавливаем старые версии файлов (если есть)
+      - name: Restore cached files
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: old_files
+          key: configs-cache
 
-      - name: Download file 3
-        run: curl -L -o "WhiteCidrRUAll.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt"
-      
-      - name: Send file 3
-        env:
-          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHAT_ID}" -F "document=@WhiteCidrRUAll.txt"
+      # Скачиваем свежие файлы в новую папку
+      - name: Download fresh files
+        run: |
+          mkdir -p new_files
+          curl -L -o "new_files/WhiteListsRusMobile(MostHelpful).txt" \
+            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt"
+          curl -L -o "new_files/WhiteListsRusMobile2.txt" \
+            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt"
+          curl -L -o "new_files/WhiteCidrRUAll.txt" \
+            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt"
+          curl -L -o "new_files/WhiteCidrRUChecked.txt" \
+            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-checked.txt"
+          curl -L -o "new_files/WhiteSNIRUAll.txt" \
+            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      - name: Download file 4
-        run: curl -L -o "WhiteCidrRUChecked.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-checked.txt"
-      
-      - name: Send file 4
-        env:
-          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHAT_ID}" -F "document=@WhiteCidrRUChecked.txt"
+      # ЛОГИКА: Сравниваем старые и новые файлы
+      - name: Check for changes
+        id: diff
+        run: |
+          CHANGED_FILES=""
+          if [ -d "old_files" ]; then
+            for file in new_files/*; do
+              filename=$(basename "$file")
+              if [ ! -f "old_files/$filename" ] || ! cmp -s "$file" "old_files/$filename"; then
+                CHANGED_FILES="$CHANGED_FILES $filename"
+              fi
+            done
+          else
+            CHANGED_FILES="all"
+          fi
+          echo "changed=$CHANGED_FILES" >> $GITHUB_OUTPUT
 
-      - name: Download file 5
-        run: curl -L -o "WhiteSNIRUAll.txt" "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
-      
-      - name: Send file 5
+      # ПУБЛИКАЦИЯ: Отправляем в ТГ только изменившиеся файлы
+      - name: Send only changed files to Telegram
+        if: steps.diff.outputs.changed != ''
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" -F "chat_id=${TG_CHAT_ID}" -F "document=@WhiteSNIRUAll.txt"
+        run: |
+          for filename in ${{ steps.diff.outputs.changed }}; do
+            if [ -f "new_files/$filename" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+                -F "chat_id=${TG_CHAT_ID}" \
+                -F "document=@new_files/$filename"
+            fi
+          done
+
+      # ОБНОВЛЯЕМ КЭШ: Кладем новые файлы поверх старых для будущих сравнений
+      - name: Update cache
+        run: |
+          rm -rf old_files
+          mv new_files old_files
