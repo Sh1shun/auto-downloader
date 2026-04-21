@@ -12,17 +12,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Восстанавливаем кэш
-      - name: Restore cached data
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            old_files
-            message_ids.txt
-          key: configs-cache-v8
-          restore-keys: configs-cache-
-
       # Скачиваем свежие файлы
       - name: Download fresh files
         run: |
@@ -38,24 +27,35 @@ jobs:
           curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # Проверяем изменения
-      - name: Check for changes
+      # Вычисляем хеш новых файлов
+      - name: Calculate hash
+        id: hash
+        run: |
+          HASH=$(cat new_files/* | md5sum | cut -d' ' -f1)
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+          echo "Хеш: $HASH"
+
+      # Восстанавливаем кэш по хешу (если есть)
+      - name: Restore cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            old_files
+            message_ids.txt
+          key: configs-${{ steps.hash.outputs.hash }}
+
+      # Сравниваем (если кэш найден — файлы не менялись)
+      - name: Check if changed
         id: diff
         run: |
-          CHANGED="false"
-          if [ -d "old_files" ]; then
-            for file in new_files/*; do
-              filename=$(basename "$file")
-              if [ ! -f "old_files/$filename" ] || ! cmp -s "$file" "old_files/$filename"; then
-                CHANGED="true"
-                break
-              fi
-            done
+          if [ "${{ steps.cache.outputs.cache-hit }}" == "true" ]; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "Файлы не изменились (кэш совпадает)"
           else
-            CHANGED="true"
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "Файлы ИЗМЕНИЛИСЬ!"
           fi
-          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
-          echo "Изменения: $CHANGED"
 
       # Удаляем старые сообщения
       - name: Delete old messages
@@ -98,8 +98,8 @@ jobs:
             fi
           done
 
-      # Обновляем кэш
-      - name: Update cache
+      # Сохраняем кэш с новыми файлами (автоматически, после успешного выполнения)
+      - name: Save new files for next run
         if: steps.diff.outputs.changed == 'true'
         run: |
           rm -rf old_files
