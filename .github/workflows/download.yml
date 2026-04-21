@@ -33,29 +33,45 @@ jobs:
         run: |
           HASH=$(cat new_files/* | md5sum | cut -d' ' -f1)
           echo "hash=$HASH" >> $GITHUB_OUTPUT
-          echo "Хеш: $HASH"
+          echo "Новый хеш: $HASH"
 
-      # Восстанавливаем кэш по хешу (если есть)
-      - name: Restore cache
-        id: cache
+      # Восстанавливаем старый хеш и ID сообщений из отдельного кэша
+      - name: Restore old state
+        id: state
         uses: actions/cache@v4
         with:
           path: |
-            old_files
+            old_hash.txt
             message_ids.txt
-          key: configs-${{ steps.hash.outputs.hash }}
+          key: configs-state
 
-      # Сравниваем (если кэш найден — файлы не менялись)
-      - name: Check if changed
+      # Загружаем старые файлы для сравнения (если есть)
+      - name: Restore old files
+        id: files
+        uses: actions/cache@v4
+        with:
+          path: old_files
+          key: configs-files-${{ steps.state.outputs.cache-hit == 'true' && hashFiles('old_hash.txt') || 'initial' }}
+
+      # Сравниваем хеши
+      - name: Check for changes
         id: diff
         run: |
-          if [ "${{ steps.cache.outputs.cache-hit }}" == "true" ]; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-            echo "Файлы не изменились (кэш совпадает)"
+          CHANGED="false"
+          if [ -f "old_hash.txt" ]; then
+            OLD_HASH=$(cat old_hash.txt)
+            NEW_HASH="${{ steps.hash.outputs.hash }}"
+            if [ "$OLD_HASH" != "$NEW_HASH" ]; then
+              CHANGED="true"
+              echo "Хеш изменился: $OLD_HASH -> $NEW_HASH"
+            else
+              echo "Хеш не изменился"
+            fi
           else
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "Файлы ИЗМЕНИЛИСЬ!"
+            CHANGED="true"
+            echo "Первый запуск, хеша нет"
           fi
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
 
       # Удаляем старые сообщения
       - name: Delete old messages
@@ -65,6 +81,8 @@ jobs:
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           if [ -f "message_ids.txt" ]; then
+            echo "Найдены ID старых сообщений:"
+            cat message_ids.txt
             while IFS= read -r msg_id; do
               if [ -n "$msg_id" ]; then
                 curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
@@ -74,7 +92,7 @@ jobs:
               fi
             done < message_ids.txt
           else
-            echo "Нет старых ID сообщений"
+            echo "Нет сохранённых ID сообщений (первый запуск или кэш пуст)"
           fi
 
       # Отправляем новые файлы
@@ -84,23 +102,50 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          rm -f message_ids.txt
+          rm -f new_msg_ids.txt
           for filepath in new_files/*; do
             if [ -f "$filepath" ]; then
+              echo "Отправляем: $(basename $filepath)"
               RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
                 -F "document=@$filepath")
               MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
               if [ -n "$MSG_ID" ]; then
-                echo "$MSG_ID" >> message_ids.txt
+                echo "$MSG_ID" >> new_msg_ids.txt
                 echo "Отправлено, ID: $MSG_ID"
+              else
+                echo "Ошибка при отправке $(basename $filepath)"
+                echo "Ответ API: $RESPONSE"
               fi
             fi
           done
 
-      # Сохраняем кэш с новыми файлами (автоматически, после успешного выполнения)
-      - name: Save new files for next run
+      # Сохраняем новый хеш и ID сообщений
+      - name: Save new state
         if: steps.diff.outputs.changed == 'true'
         run: |
+          echo "${{ steps.hash.outputs.hash }}" > old_hash.txt
+          if [ -f new_msg_ids.txt ]; then
+            mv new_msg_ids.txt message_ids.txt
+          fi
+          # Сохраняем новые файлы для следующего сравнения
           rm -rf old_files
           mv new_files old_files
+
+      # Обновляем кэш состояния
+      - name: Update state cache
+        if: steps.diff.outputs.changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            old_hash.txt
+            message_ids.txt
+          key: configs-state
+
+      # Обновляем кэш файлов
+      - name: Update files cache
+        if: steps.diff.outputs.changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: old_files
+          key: configs-files-${{ steps.hash.outputs.hash }}
