@@ -1,4 +1,4 @@
-name: Download and send only changed configs with cleanup
+name: Download and send configs to Telegram
 
 on:
   schedule:
@@ -6,102 +6,88 @@ on:
   workflow_dispatch:
 
 jobs:
-  check-and-send:
+  download-and-send:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # КЭШ: Восстанавливаем старые версии файлов и ID сообщений
-      - name: Restore cached data
+      # Восстанавливаем ID старых сообщений (если есть)
+      - name: Restore message IDs
         id: cache
         uses: actions/cache@v4
         with:
-          path: |
-            old_files
-            message_ids.txt
-          key: configs-cache-v3
+          path: message_ids.txt
+          key: message-ids-cache
 
-      # Скачиваем свежие файлы
-      - name: Download fresh files
+      # Скачиваем файлы
+      - name: Download files
         run: |
-          mkdir -p new_files
-          curl -L -o "new_files/WhiteListsRusMobile(MostHelpful).txt" \
+          curl -L -o "WhiteListsRusMobile(MostHelpful).txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt"
-          curl -L -o "new_files/WhiteListsRusMobile2.txt" \
+          curl -L -o "WhiteListsRusMobile2.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt"
-          curl -L -o "new_files/WhiteCidrRUAll.txt" \
+          curl -L -o "WhiteCidrRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt"
-          curl -L -o "new_files/WhiteCidrRUChecked.txt" \
+          curl -L -o "WhiteCidrRUChecked.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-checked.txt"
-          curl -L -o "new_files/WhiteSNIRUAll.txt" \
+          curl -L -o "WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # Определяем, какие файлы изменились
-      - name: Check for changes
-        id: diff
-        run: |
-          CHANGED_FILES=""
-          if [ -d "old_files" ]; then
-            for file in new_files/*; do
-              filename=$(basename "$file")
-              if [ ! -f "old_files/$filename" ] || ! cmp -s "$file" "old_files/$filename"; then
-                CHANGED_FILES="$CHANGED_FILES $filename"
-              fi
-            done
-          else
-            CHANGED_FILES="all"
-          fi
-          echo "changed=$CHANGED_FILES" >> $GITHUB_OUTPUT
-          echo "DEBUG: changed files = $CHANGED_FILES"
-
-      # УДАЛЯЕМ старые сообщения из канала
-      - name: Delete old messages from channel
-        if: steps.diff.outputs.changed != ''
+      # Удаляем старые сообщения (только если файл с ID существует)
+      - name: Delete old messages
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           if [ -f "message_ids.txt" ]; then
-            echo "Deleting old messages..."
+            echo "📤 Удаляем старые сообщения..."
             while IFS= read -r msg_id; do
               if [ -n "$msg_id" ]; then
                 curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
                   -F "chat_id=${TG_CHAT_ID}" \
-                  -F "message_id=${msg_id}"
-                echo "Deleted message $msg_id"
+                  -F "message_id=${msg_id}" > /dev/null 2>&1
+                echo "Удалено сообщение: $msg_id"
               fi
             done < message_ids.txt
           else
-            echo "No message_ids.txt found, skipping delete"
+            echo "📭 Сохраненных ID сообщений нет (первый запуск или пустой канал)"
           fi
 
-      # ОТПРАВЛЯЕМ новые/изменённые файлы и сохраняем их ID
-      - name: Send changed files and save message IDs
-        if: steps.diff.outputs.changed != ''
+      # Отправляем ВСЕ файлы (всегда) и сохраняем их ID
+      - name: Send all files and save message IDs
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
+          # Очищаем старый файл с ID
           rm -f message_ids.txt
-          for filename in ${{ steps.diff.outputs.changed }}; do
-            if [ -f "new_files/$filename" ]; then
-              echo "Sending file: $filename"
+          
+          # Отправляем каждый файл
+          for file in WhiteListsRusMobile\(MostHelpful\).txt WhiteListsRusMobile2.txt WhiteCidrRUAll.txt WhiteCidrRUChecked.txt WhiteSNIRUAll.txt; do
+            if [ -f "$file" ]; then
+              echo "📤 Отправляем: $file"
               RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
-                -F "document=@new_files/$filename")
-              echo "Response: $RESPONSE"
+                -F "document=@$file")
+              
+              # Извлекаем message_id из ответа
               MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
               if [ -n "$MSG_ID" ]; then
                 echo "$MSG_ID" >> message_ids.txt
-                echo "Saved message_id: $MSG_ID"
+                echo "✅ Отправлено, ID: $MSG_ID"
+              else
+                echo "❌ Ошибка при отправке $file"
+                echo "Ответ API: $RESPONSE"
               fi
             fi
           done
+          
+          echo "📝 Сохранено ID сообщений: $(cat message_ids.txt 2>/dev/null | wc -l) шт."
 
-      # Обновляем кэш новыми файлами
-      - name: Update cache
-        if: steps.diff.outputs.changed != ''
-        run: |
-          rm -rf old_files
-          mv new_files old_files
+      # Сохраняем ID сообщений в кэш
+      - name: Save message IDs to cache
+        uses: actions/cache@v4
+        with:
+          path: message_ids.txt
+          key: message-ids-cache
