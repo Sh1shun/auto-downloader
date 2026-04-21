@@ -20,7 +20,7 @@ jobs:
           path: |
             old_files
             message_ids.txt
-          key: configs-cache-v2
+          key: configs-cache-v3
 
       # Скачиваем свежие файлы
       - name: Download fresh files
@@ -53,22 +53,27 @@ jobs:
             CHANGED_FILES="all"
           fi
           echo "changed=$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "DEBUG: changed files = $CHANGED_FILES"
 
-      # УДАЛЯЕМ старые сообщения из канала (если есть)
+      # УДАЛЯЕМ старые сообщения из канала
       - name: Delete old messages from channel
-        if: steps.diff.outputs.changed != '' && github.event_name != 'schedule' || steps.diff.outputs.changed != ''
+        if: steps.diff.outputs.changed != ''
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           if [ -f "message_ids.txt" ]; then
+            echo "Deleting old messages..."
             while IFS= read -r msg_id; do
               if [ -n "$msg_id" ]; then
                 curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
                   -F "chat_id=${TG_CHAT_ID}" \
-                  -F "message_id=${msg_id}" || true
+                  -F "message_id=${msg_id}"
+                echo "Deleted message $msg_id"
               fi
             done < message_ids.txt
+          else
+            echo "No message_ids.txt found, skipping delete"
           fi
 
       # ОТПРАВЛЯЕМ новые/изменённые файлы и сохраняем их ID
@@ -81,18 +86,22 @@ jobs:
           rm -f message_ids.txt
           for filename in ${{ steps.diff.outputs.changed }}; do
             if [ -f "new_files/$filename" ]; then
+              echo "Sending file: $filename"
               RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
                 -F "document=@new_files/$filename")
+              echo "Response: $RESPONSE"
               MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
               if [ -n "$MSG_ID" ]; then
                 echo "$MSG_ID" >> message_ids.txt
+                echo "Saved message_id: $MSG_ID"
               fi
             fi
           done
 
       # Обновляем кэш новыми файлами
       - name: Update cache
+        if: steps.diff.outputs.changed != ''
         run: |
           rm -rf old_files
           mv new_files old_files
