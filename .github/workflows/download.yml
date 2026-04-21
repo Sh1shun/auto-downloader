@@ -12,6 +12,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Восстанавливаем кэш
+      - name: Restore cached data
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            old_files
+            message_ids.txt
+          key: configs-cache-v8
+          restore-keys: configs-cache-
+
       # Скачиваем свежие файлы
       - name: Download fresh files
         run: |
@@ -27,42 +38,33 @@ jobs:
           curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # Создаём хеш новых файлов
-      - name: Generate new hash
-        run: |
-          find new_files -type f -exec md5sum {} \; | sort > new_hash.txt
-
-      # Загружаем старый хеш из репозитория (если есть)
-      - name: Download old hash
-        run: |
-          if curl -s -f -o old_hash.txt "https://raw.githubusercontent.com/Sh1shun/auto-downloader/main/hash.txt"; then
-            echo "Старый хеш загружен"
-          else
-            echo "Старый хеш не найден, это первый запуск"
-            touch old_hash.txt
-          fi
-
-      # Сравниваем хеши
+      # Проверяем изменения
       - name: Check for changes
         id: diff
         run: |
-          if cmp -s new_hash.txt old_hash.txt; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-            echo "Файлы не изменились"
+          CHANGED="false"
+          if [ -d "old_files" ]; then
+            for file in new_files/*; do
+              filename=$(basename "$file")
+              if [ ! -f "old_files/$filename" ] || ! cmp -s "$file" "old_files/$filename"; then
+                CHANGED="true"
+                break
+              fi
+            done
           else
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "Файлы ИЗМЕНИЛИСЬ!"
+            CHANGED="true"
           fi
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
+          echo "Изменения: $CHANGED"
 
-      # Удаляем старые сообщения (если есть)
+      # Удаляем старые сообщения
       - name: Delete old messages
         if: steps.diff.outputs.changed == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          if curl -s -f -o msg_ids.txt "https://raw.githubusercontent.com/Sh1shun/auto-downloader/main/message_ids.txt"; then
-            echo "Загружены ID сообщений"
+          if [ -f "message_ids.txt" ]; then
             while IFS= read -r msg_id; do
               if [ -n "$msg_id" ]; then
                 curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
@@ -70,19 +72,19 @@ jobs:
                   -F "message_id=${msg_id}" || true
                 echo "Удалено: $msg_id"
               fi
-            done < msg_ids.txt
+            done < message_ids.txt
           else
-            echo "Нет сохранённых ID сообщений"
+            echo "Нет старых ID сообщений"
           fi
 
-      # Отправляем ВСЕ новые файлы
-      - name: Send all files
+      # Отправляем новые файлы
+      - name: Send new files
         if: steps.diff.outputs.changed == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          rm -f new_msg_ids.txt
+          rm -f message_ids.txt
           for filepath in new_files/*; do
             if [ -f "$filepath" ]; then
               RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
@@ -90,26 +92,15 @@ jobs:
                 -F "document=@$filepath")
               MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
               if [ -n "$MSG_ID" ]; then
-                echo "$MSG_ID" >> new_msg_ids.txt
+                echo "$MSG_ID" >> message_ids.txt
+                echo "Отправлено, ID: $MSG_ID"
               fi
             fi
           done
 
-      # Сохраняем новый хеш и ID сообщений в репозиторий
-      - name: Save hash and message IDs to repo
+      # Обновляем кэш
+      - name: Update cache
         if: steps.diff.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://Sh1shun:${GH_TOKEN}@github.com/Sh1shun/auto-downloader.git
-          
-          cp new_hash.txt hash.txt
-          if [ -f new_msg_ids.txt ]; then
-            cp new_msg_ids.txt message_ids.txt
-          fi
-          
-          git add hash.txt message_ids.txt
-          git commit -m "Update configs hash and message IDs [skip ci]" || echo "Nothing to commit"
-          git push
+          rm -rf old_files
+          mv new_files old_files
