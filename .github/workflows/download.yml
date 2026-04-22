@@ -115,6 +115,7 @@ jobs:
           echo "${{ steps.hash.outputs.hash }}" > last_hash.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main || true
           git add last_hash.txt message_ids.txt
           git commit -m "Update configs state [skip ci]" || echo "Nothing to commit"
           git push
