@@ -108,14 +108,25 @@ jobs:
             fi
           done
 
-      # Сохраняем новый хеш и ID сообщений в репозиторий
+      # Сохраняем новый хеш и ID сообщений в репозиторий (с правильной последовательностью)
       - name: Save state to repository
         if: steps.diff.outputs.changed == 'true'
         run: |
+          # 1. Записываем новый хеш в файл
           echo "${{ steps.hash.outputs.hash }}" > last_hash.txt
+          
+          # 2. Настраиваем Git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main || true
+          
+          # 3. Добавляем файлы в коммит
           git add last_hash.txt message_ids.txt
+          
+          # 4. Коммитим (если есть что коммитить)
           git commit -m "Update configs state [skip ci]" || echo "Nothing to commit"
+          
+          # 5. Сначала стягиваем изменения из удалённого репозитория (--rebase)
+          git pull --rebase origin main || git pull origin main --no-rebase
+          
+          # 6. Теперь пушим
           git push
