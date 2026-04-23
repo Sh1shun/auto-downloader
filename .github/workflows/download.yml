@@ -32,7 +32,7 @@ jobs:
           curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # Вычисляем хеш новых файлов
+      # Создаём хеш новых файлов
       - name: Calculate new hash
         id: hash
         run: |
@@ -40,12 +40,14 @@ jobs:
           echo "hash=$HASH" >> $GITHUB_OUTPUT
           echo "Новый хеш: $HASH"
 
-      # Читаем старый хеш из файла в репозитории
+      # Читаем старый хеш из репозитория (без message_ids.txt)
       - name: Read old hash
         id: old
         run: |
-          if [ -f "last_hash.txt" ]; then
-            OLD_HASH=$(cat last_hash.txt)
+          git fetch origin main
+          git show origin/main:last_hash.txt 2>/dev/null > old_hash.txt || echo "Файл не найден"
+          if [ -f "old_hash.txt" ]; then
+            OLD_HASH=$(cat old_hash.txt)
             echo "hash=$OLD_HASH" >> $GITHUB_OUTPUT
             echo "Старый хеш: $OLD_HASH"
           else
@@ -65,26 +67,27 @@ jobs:
             echo "Файлы не изменились"
           fi
 
-      # Удаляем старые сообщения (если есть файл с ID)
-      - name: Delete old messages
+      # Удаляем ВСЕ сообщения в канале (простой способ)
+      - name: Delete all old messages
         if: steps.diff.outputs.changed == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          if [ -f "message_ids.txt" ]; then
-            echo "Удаляем старые сообщения..."
-            while IFS= read -r msg_id; do
-              if [ -n "$msg_id" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
-                  -F "chat_id=${TG_CHAT_ID}" \
-                  -F "message_id=${msg_id}" || true
-                echo "Удалено: $msg_id"
-              fi
-            done < message_ids.txt
-          else
-            echo "Нет сохранённых ID сообщений"
-          fi
+          # Удаляем последние 100 сообщений (никто не хранит больше)
+          for i in {1..100}; do
+            # Получаем ID последнего сообщения
+            RESPONSE=$(curl -s "https://api.telegram.org/bot${TG_BOT_TOKEN}/getUpdates?chat_id=${TG_CHAT_ID}&limit=1")
+            MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+            if [ -n "$MSG_ID" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
+                -F "chat_id=${TG_CHAT_ID}" \
+                -F "message_id=${MSG_ID}" > /dev/null
+              echo "Удалено сообщение: $MSG_ID"
+            else
+              break
+            fi
+          done
 
       # Отправляем новые файлы
       - name: Send new files
@@ -93,40 +96,28 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          rm -f message_ids.txt
           for filepath in new_files/*; do
             if [ -f "$filepath" ]; then
               echo "Отправляем: $(basename $filepath)"
-              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
-                -F "document=@$filepath")
-              MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-              if [ -n "$MSG_ID" ]; then
-                echo "$MSG_ID" >> message_ids.txt
-                echo "Отправлено, ID: $MSG_ID"
-              fi
+                -F "document=@$filepath"
             fi
           done
 
-      # Сохраняем новый хеш и ID сообщений в репозиторий (с правильной последовательностью)
-      - name: Save state to repository
+      # Сохраняем новый хеш в репозиторий
+      - name: Save hash to repository
         if: steps.diff.outputs.changed == 'true'
         run: |
-          # 1. Записываем новый хеш в файл
           echo "${{ steps.hash.outputs.hash }}" > last_hash.txt
-          
-          # 2. Настраиваем Git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 3. Добавляем файлы в коммит
-          git add last_hash.txt message_ids.txt
+          # Принудительное обновление без конфликтов
+          git fetch origin main
+          git checkout origin/main -- last_hash.txt 2>/dev/null || true
           
-          # 4. Коммитим (если есть что коммитить)
-          git commit -m "Update configs state [skip ci]" || echo "Nothing to commit"
-          
-          # 5. Сначала стягиваем изменения из удалённого репозитория (--rebase)
-          git pull --rebase origin main || git pull origin main --no-rebase
-          
-          # 6. Теперь пушим
+          git add last_hash.txt
+          git commit -m "Update hash [skip ci]" --allow-empty
+          git pull origin main --rebase --strategy-option=theirs
           git push
