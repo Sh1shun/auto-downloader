@@ -2,7 +2,7 @@ name: Download and send only changed configs
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Поставлю 10 минут, чтобы не спамить, но ты можешь вернуть 5
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 1. Скачиваем свежие файлы
+      # Скачиваем свежие файлы во временную папку
       - name: Download fresh files
         run: |
           mkdir -p new_files
@@ -32,82 +32,96 @@ jobs:
           curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # 2. Восстанавливаем старые файлы и ID сообщений из кэша (НЕ из репозитория)
-      - name: Restore previous state
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            old_files
-            message_ids.txt
-          key: configs-cache-v9  # Фиксированный ключ, чтобы кэш был стабильным
+      # Создаём контрольную сумму всех файлов
+      - name: Calculate new checksum
+        id: hash
+        run: |
+          CHECKSUM=$(cat new_files/* | md5sum | cut -d' ' -f1)
+          echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
+          echo "$CHECKSUM" > new_checksum.txt
 
-      # 3. Сравниваем ПОСИМВОЛЬНО, а не по хешу. Это надёжнее.
-      - name: Compare files
+      # Читаем старую контрольную сумму из файла в репозитории
+      - name: Read old checksum
+        id: old
+        run: |
+          if [ -f "last_checksum.txt" ]; then
+            OLD=$(cat last_checksum.txt)
+            echo "checksum=$OLD" >> $GITHUB_OUTPUT
+            echo "Старый: $OLD"
+          else
+            echo "checksum=" >> $GITHUB_OUTPUT
+            echo "Старый: не найден"
+          fi
+
+      # Сравниваем
+      - name: Check for changes
         id: diff
         run: |
-          CHANGED="false"
-          if [ -d "old_files" ]; then
-            for file in new_files/*; do
-              filename=$(basename "$file")
-              if [ ! -f "old_files/$filename" ]; then
-                CHANGED="true"
-                echo "Новый файл: $filename"
-              elif ! cmp -s "$file" "old_files/$filename"; then
-                CHANGED="true"
-                echo "Изменился: $filename"
-              fi
-            done
+          if [ "${{ steps.hash.outputs.checksum }}" != "${{ steps.old.outputs.checksum }}" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "✅ Файлы ИЗМЕНИЛИСЬ!"
           else
-            CHANGED="true"
-            echo "Первый запуск, кэша нет"
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "⏸️ Файлы не изменились"
           fi
-          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
 
-      # 4. Удаляем старые сообщения (гарантированно, через ID из файла)
+      # Если нет изменений — выходим
+      - name: No changes
+        if: steps.diff.outputs.changed == 'false'
+        run: echo "Изменений нет, завершаем"
+
+      # Удаляем старые сообщения (если есть файл с ID)
       - name: Delete old messages
-        if: steps.diff.outputs.changed == 'true' && hashFiles('message_ids.txt') != ''
+        if: steps.diff.outputs.changed == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          echo "Удаляем старые сообщения по ID..."
-          cat message_ids.txt | while read msg_id; do
-            if [ -n "$msg_id" ]; then
-              # Пробуем удалить, если ID есть в файле
-              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
-                -F "chat_id=${TG_CHAT_ID}" \
-                -F "message_id=${msg_id}" || true
-              echo "Удалено/пытался удалить: $msg_id"
-            fi
-          done
-          rm -f message_ids.txt
+          if [ -f "message_ids.txt" ]; then
+            echo "Удаляем старые сообщения..."
+            while IFS= read -r msg_id; do
+              if [ -n "$msg_id" ]; then
+                curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
+                  -F "chat_id=${TG_CHAT_ID}" \
+                  -F "message_id=${msg_id}" || true
+                echo "Удалено: $msg_id"
+              fi
+            done < message_ids.txt
+            rm -f message_ids.txt
+          else
+            echo "Нет старых ID сообщений"
+          fi
 
-      # 5. Отправляем ВСЕ новые файлы и сохраняем их ID
+      # Отправляем новые файлы и сохраняем их ID
       - name: Send new files
         if: steps.diff.outputs.changed == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
+          rm -f message_ids.txt
           for filepath in new_files/*; do
             if [ -f "$filepath" ]; then
               echo "Отправляем: $(basename $filepath)"
               RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
                 -F "document=@$filepath")
-              # Парсим ID нового сообщения
               MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
               if [ -n "$MSG_ID" ]; then
                 echo "$MSG_ID" >> message_ids.txt
-                echo "Отправлено, ID: $MSG_ID"
+                echo "ID: $MSG_ID"
               fi
             fi
           done
 
-      # 6. Обновляем кэш для следующего запуска
-      - name: Update cache
+      # Сохраняем контрольную сумму и ID сообщений в репозиторий
+      - name: Save state
         if: steps.diff.outputs.changed == 'true'
         run: |
-          rm -rf old_files
-          mv new_files old_files
+          cp new_checksum.txt last_checksum.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_checksum.txt message_ids.txt
+          git commit -m "Update state [skip ci]" || echo "Nothing to commit"
+          git pull origin main --rebase || true
+          git push
