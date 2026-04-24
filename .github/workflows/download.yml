@@ -2,7 +2,7 @@ name: Download and send only changed configs
 
 on:
   schedule:
-    - cron: '*/10 * * * *'  # Поставлю 10 минут, чтобы не спамить, но ты можешь вернуть 5
+    - cron: '*/5 * * * *'  # Поставлю 10 минут, чтобы не спамить, но ты можешь вернуть 5
   workflow_dispatch:
 
 jobs:
