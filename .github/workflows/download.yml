@@ -2,7 +2,7 @@ name: Download and send only changed configs
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -14,7 +14,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # Скачиваем свежие файлы
@@ -32,58 +32,62 @@ jobs:
           curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # Создаём хеш новых файлов
+      # Вычисляем хеш новых файлов
       - name: Calculate new hash
         id: hash
         run: |
           HASH=$(cat new_files/* | md5sum | cut -d' ' -f1)
           echo "hash=$HASH" >> $GITHUB_OUTPUT
-          echo "Новый хеш: $HASH"
+          echo "NEW_HASH=$HASH" >> $GITHUB_ENV
 
-      # Читаем старый хеш из репозитория (без message_ids.txt)
+      # Читаем старый хеш из файла
       - name: Read old hash
         id: old
         run: |
-          git fetch origin main
-          git show origin/main:last_hash.txt 2>/dev/null > old_hash.txt || echo "Файл не найден"
-          if [ -f "old_hash.txt" ]; then
-            OLD_HASH=$(cat old_hash.txt)
+          if [ -f "last_hash.txt" ]; then
+            OLD_HASH=$(cat last_hash.txt)
             echo "hash=$OLD_HASH" >> $GITHUB_OUTPUT
             echo "Старый хеш: $OLD_HASH"
           else
             echo "hash=" >> $GITHUB_OUTPUT
-            echo "Старый хеш не найден (первый запуск)"
+            echo "Старый хеш не найден"
           fi
 
-      # Сравниваем хеши
+      # Сравниваем хеши и решаем, нужно ли обновлять
       - name: Check for changes
         id: diff
         run: |
           if [ "${{ steps.hash.outputs.hash }}" != "${{ steps.old.outputs.hash }}" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
-            echo "Файлы ИЗМЕНИЛИСЬ!"
+            echo "✅ Файлы ИЗМЕНИЛИСЬ! Публикуем..."
           else
             echo "changed=false" >> $GITHUB_OUTPUT
-            echo "Файлы не изменились"
+            echo "⏸️ Файлы не изменились. Завершаем работу."
           fi
 
-      # Удаляем ВСЕ сообщения в канале (простой способ)
+      # Если нет изменений — выходим
+      - name: No changes, exit
+        if: steps.diff.outputs.changed == 'false'
+        run: |
+          echo "Изменений нет, завершаем"
+          exit 0
+
+      # Удаляем ВСЕ старые сообщения из канала
       - name: Delete all old messages
         if: steps.diff.outputs.changed == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          # Удаляем последние 100 сообщений (никто не хранит больше)
-          for i in {1..100}; do
-            # Получаем ID последнего сообщения
+          echo "Удаляем старые сообщения..."
+          for i in {1..50}; do
             RESPONSE=$(curl -s "https://api.telegram.org/bot${TG_BOT_TOKEN}/getUpdates?chat_id=${TG_CHAT_ID}&limit=1")
             MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
             if [ -n "$MSG_ID" ]; then
               curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
                 -F "chat_id=${TG_CHAT_ID}" \
                 -F "message_id=${MSG_ID}" > /dev/null
-              echo "Удалено сообщение: $MSG_ID"
+              echo "Удалено: $MSG_ID"
             else
               break
             fi
@@ -96,6 +100,7 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
+          echo "Отправляем новые файлы..."
           for filepath in new_files/*; do
             if [ -f "$filepath" ]; then
               echo "Отправляем: $(basename $filepath)"
@@ -106,18 +111,13 @@ jobs:
           done
 
       # Сохраняем новый хеш в репозиторий
-      - name: Save hash to repository
+      - name: Save new hash
         if: steps.diff.outputs.changed == 'true'
         run: |
           echo "${{ steps.hash.outputs.hash }}" > last_hash.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Принудительное обновление без конфликтов
-          git fetch origin main
-          git checkout origin/main -- last_hash.txt 2>/dev/null || true
-          
           git add last_hash.txt
-          git commit -m "Update hash [skip ci]" --allow-empty
-          git pull origin main --rebase --strategy-option=theirs
+          git commit -m "Update hash [skip ci]" || echo "Nothing to commit"
+          git pull origin main --rebase --strategy-option=theirs || true
           git push
