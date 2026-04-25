@@ -70,6 +70,38 @@ jobs:
         if: steps.diff.outputs.changed == 'false'
         run: echo "Изменений нет, завершаем"
 
+      # === НОВЫЙ ШАГ: Блокировка от дублей ===
+      - name: Check lock file
+        id: lock
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          if [ -f "sending.lock" ]; then
+            LOCK_TIME=$(cat sending.lock)
+            NOW=$(date +%s)
+            # Если прошло меньше 15 минут — блокируем
+            if [ $((NOW - LOCK_TIME)) -lt 900 ]; then
+              echo "locked=true" >> $GITHUB_OUTPUT
+              echo "⚠️ Блокировка активна, отправка пропущена"
+            else
+              echo "locked=false" >> $GITHUB_OUTPUT
+              rm -f sending.lock
+            fi
+          else
+            echo "locked=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Exit if locked
+        if: steps.lock.outputs.locked == 'true'
+        run: |
+          echo "Пропускаем, так как недавно уже отправляли"
+          exit 0
+
+      # Ставим блокировку
+      - name: Set lock
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          date +%s > sending.lock
+
       # Удаляем старые сообщения (если есть файл с ID)
       - name: Delete old messages
         if: steps.diff.outputs.changed == 'true'
@@ -99,7 +131,6 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          rm -f message_ids.txt
           for filepath in new_files/*; do
             if [ -f "$filepath" ]; then
               echo "Отправляем: $(basename $filepath)"
@@ -121,7 +152,7 @@ jobs:
           cp new_checksum.txt last_checksum.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add last_checksum.txt message_ids.txt
+          git add last_checksum.txt message_ids.txt sending.lock
           git commit -m "Update state [skip ci]" || echo "Nothing to commit"
-          git pull origin main --rebase || true
+          git pull origin main --rebase --strategy-option=theirs || true
           git push
