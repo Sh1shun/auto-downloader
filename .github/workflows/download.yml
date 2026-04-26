@@ -110,16 +110,25 @@ jobs:
           fi
           
            # Отправляем новые файлы (удаляем первые 6 строк)
+           # Отправляем новые файлы (в заданном порядке)
       - name: Send new files
         if: steps.diff.outputs.changed == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          for filepath in new_files/*; do
+          # Определяем порядок файлов
+          FILES_IN_ORDER=(
+            "WhiteListsRusMobile_MostHelpful.txt"
+            "WhiteListsRusMobile2.txt"
+            "WhiteCidrRUAll.txt"
+            "WhiteCidrRUChecked.txt"
+            "WhiteSNIRUAll.txt"
+          )
+          
+          for filename in "${FILES_IN_ORDER[@]}"; do
+            filepath="new_files/$filename"
             if [ -f "$filepath" ]; then
-              filename=$(basename "$filepath")
-              
               # Извлекаем дату
               DATE_LINE=$(grep -E '^# Date/Time:' "$filepath" | head -1)
               if [ -n "$DATE_LINE" ]; then
@@ -129,8 +138,7 @@ jobs:
                 CAPTION="📁 ${filename}"
               fi
               
-              # Отправляем файл, удаляя первые 6 строк через tail
-              # Используем bash process substitution
+              # Отправляем
               {
                 tail -n +7 "$filepath"
               } | curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
