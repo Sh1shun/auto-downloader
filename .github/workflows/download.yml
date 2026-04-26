@@ -17,7 +17,7 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Скачиваем свежие файлы во временную папку
+      # Скачиваем свежие файлы
       - name: Download fresh files
         run: |
           mkdir -p new_files
@@ -32,7 +32,7 @@ jobs:
           curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # Создаём контрольную сумму всех файлов
+      # Вычисляем хеш для проверки изменений
       - name: Calculate new checksum
         id: hash
         run: |
@@ -40,29 +40,25 @@ jobs:
           echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
           echo "$CHECKSUM" > new_checksum.txt
 
-      # Читаем старую контрольную сумму из файла в репозитории
+      # Читаем старую контрольную сумму
       - name: Read old checksum
         id: old
         run: |
           if [ -f "last_checksum.txt" ]; then
             OLD=$(cat last_checksum.txt)
             echo "checksum=$OLD" >> $GITHUB_OUTPUT
-            echo "Старый: $OLD"
           else
             echo "checksum=" >> $GITHUB_OUTPUT
-            echo "Старый: не найден"
           fi
 
-      # Сравниваем
+      # Сравниваем хеши
       - name: Check for changes
         id: diff
         run: |
           if [ "${{ steps.hash.outputs.checksum }}" != "${{ steps.old.outputs.checksum }}" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
-            echo "✅ Файлы ИЗМЕНИЛИСЬ!"
           else
             echo "changed=false" >> $GITHUB_OUTPUT
-            echo "⏸️ Файлы не изменились"
           fi
 
       # Если нет изменений — выходим
@@ -70,7 +66,7 @@ jobs:
         if: steps.diff.outputs.changed == 'false'
         run: echo "Изменений нет, завершаем"
 
-      # === НОВЫЙ ШАГ: Блокировка от дублей ===
+      # Блокировка на 15 минут (защита от дублей)
       - name: Check lock file
         id: lock
         if: steps.diff.outputs.changed == 'true'
@@ -78,10 +74,8 @@ jobs:
           if [ -f "sending.lock" ]; then
             LOCK_TIME=$(cat sending.lock)
             NOW=$(date +%s)
-            # Если прошло меньше 15 минут — блокируем
             if [ $((NOW - LOCK_TIME)) -lt 900 ]; then
               echo "locked=true" >> $GITHUB_OUTPUT
-              echo "⚠️ Блокировка активна, отправка пропущена"
             else
               echo "locked=false" >> $GITHUB_OUTPUT
               rm -f sending.lock
@@ -92,17 +86,14 @@ jobs:
       
       - name: Exit if locked
         if: steps.lock.outputs.locked == 'true'
-        run: |
-          echo "Пропускаем, так как недавно уже отправляли"
-          exit 0
+        run: exit 0
 
       # Ставим блокировку
       - name: Set lock
         if: steps.diff.outputs.changed == 'true'
-        run: |
-          date +%s > sending.lock
+        run: date +%s > sending.lock
 
-      # Удаляем старые сообщения (если есть файл с ID)
+      # Удаляем старые сообщения в канале
       - name: Delete old messages
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -110,42 +101,39 @@ jobs:
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           if [ -f "message_ids.txt" ]; then
-            echo "Удаляем старые сообщения..."
             while IFS= read -r msg_id; do
-              if [ -n "$msg_id" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
-                  -F "chat_id=${TG_CHAT_ID}" \
-                  -F "message_id=${msg_id}" || true
-                echo "Удалено: $msg_id"
-              fi
+              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
+                -F "chat_id=${TG_CHAT_ID}" \
+                -F "message_id=${msg_id}" || true
             done < message_ids.txt
             rm -f message_ids.txt
-          else
-            echo "Нет старых ID сообщений"
           fi
 
-      # Отправляем новые файлы и сохраняем их ID
-      - name: Send new files
+      # ★ НОВАЯ ЛОГИКА: извлекаем vless:// строки и отправляем как отдельные сообщения
+      - name: Send vless configs
         if: steps.diff.outputs.changed == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
+          rm -f message_ids.txt
           for filepath in new_files/*; do
-            if [ -f "$filepath" ]; then
-              echo "Отправляем: $(basename $filepath)"
-              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+            filename=$(basename "$filepath" .txt)
+            # Ищем строки, которые начинаются с vless://
+            grep -E '^vless://' "$filepath" | while read -r vless_line; do
+              # Отправляем как текст (поддерживает копирование по клику)
+              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
                 -F "chat_id=${TG_CHAT_ID}" \
-                -F "document=@$filepath")
+                -F "text=<b>${filename}</b>%0A%0A<code>${vless_line}</code>" \
+                -F "parse_mode=HTML")
               MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
               if [ -n "$MSG_ID" ]; then
                 echo "$MSG_ID" >> message_ids.txt
-                echo "ID: $MSG_ID"
               fi
-            fi
+            done
           done
 
-      # Сохраняем контрольную сумму и ID сообщений в репозиторий
+      # Сохраняем новую контрольную сумму и ID сообщений
       - name: Save state
         if: steps.diff.outputs.changed == 'true'
         run: |
