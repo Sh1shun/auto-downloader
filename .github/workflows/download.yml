@@ -112,6 +112,7 @@ jobs:
           fi
 
       # ★ ИСПРАВЛЕННАЯ ЛОГИКА: извлекаем vless:// строки
+      # Отправляем ВЕСЬ конфиг из каждого файла одним сообщением
       - name: Send vless configs
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -123,25 +124,30 @@ jobs:
           for filepath in new_files/*; do
             filename=$(basename "$filepath" .txt)
             
-            # Проверяем, есть ли в файле строки с vless://
-            if grep -q 'vless://' "$filepath" 2>/dev/null; then
-              # Извлекаем все строки с vless://
-              grep 'vless://' "$filepath" 2>/dev/null | while IFS= read -r vless_line; do
-                if [ -n "$vless_line" ]; then
-                  # Экранируем спецсимволы для JSON
-                  safe_text=$(printf "%s" "${filename}" | jq -sRr @json)
-                  safe_link=$(printf "%s" "${vless_line}" | jq -sRr @json)
-                  
-                  RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-                    -H "Content-Type: application/json" \
-                    -d "{\"chat_id\":\"${TG_CHAT_ID}\",\"text\":\"<b>${filename}</b>\\n\\n<code>${vless_line}</code>\",\"parse_mode\":\"HTML\"}")
-                  
-                  MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-                  if [ -n "$MSG_ID" ]; then
-                    echo "$MSG_ID" >> message_ids.txt
-                  fi
+            # Собираем все строки vless:// из файла
+            VLESS_LINES=$(grep -E '^vless://' "$filepath" 2>/dev/null || true)
+            
+            if [ -n "$VLESS_LINES" ]; then
+              # Формируем сообщение: заголовок + все строки
+              MESSAGE="<b>${filename}</b>%0A%0A"
+              
+              # Добавляем каждую строку в блок кода
+              echo "$VLESS_LINES" | while IFS= read -r line; do
+                if [ -n "$line" ]; then
+                  MESSAGE="${MESSAGE}<code>${line}</code>%0A"
                 fi
               done
+              
+              # Отправляем одним сообщением
+              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+                -F "chat_id=${TG_CHAT_ID}" \
+                -F "text=${MESSAGE}" \
+                -F "parse_mode=HTML")
+              
+              MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+              if [ -n "$MSG_ID" ]; then
+                echo "$MSG_ID" >> message_ids.txt
+              fi
             else
               echo "В файле $filename нет vless-строк"
             fi
