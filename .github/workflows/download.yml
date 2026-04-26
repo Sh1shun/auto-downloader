@@ -71,42 +71,40 @@ jobs:
           fi
 
       # Отправляем каждый файл как отдельное сообщение
-      - name: Send all files
+            # Отправляем новые файлы (только vless:// и trojan:// строки)
+      - name: Send new files
+        if: steps.diff.outputs.changed == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          rm -f message_ids.txt
-          
           for filepath in new_files/*; do
-            filename=$(basename "$filepath" .txt)
-            
-            if grep -q 'vless://' "$filepath" 2>/dev/null; then
-              echo "📤 Отправляем: $filename"
+            if [ -f "$filepath" ]; then
+              filename=$(basename "$filepath")
+              echo "Обрабатываем: $filename"
               
-              # Читаем содержимое файла целиком
-              CONTENT=$(cat "$filepath")
+              # Оставляем только строки начинающиеся с vless:// или trojan://
+              grep -E '^(vless://|trojan://)' "$filepath" > "filtered_$filename"
               
-              # Отправляем как документ (txt файл)
-              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
-                -F "chat_id=${TG_CHAT_ID}" \
-                -F "document=@$filepath" \
-                -F "caption=${filename}")
-              
-              MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-              if [ -n "$MSG_ID" ]; then
-                echo "$MSG_ID" >> message_ids.txt
-                echo "✅ Отправлен: $filename"
+              if [ -s "filtered_$filename" ]; then
+                RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+                  -F "chat_id=${TG_CHAT_ID}" \
+                  -F "document=@filtered_$filename" \
+                  -F "caption=${filename}")
+                
+                MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+                if [ -n "$MSG_ID" ]; then
+                  echo "$MSG_ID" >> message_ids.txt
+                  echo "✅ Отправлен: $filename"
+                else
+                  echo "❌ Ошибка: $filename"
+                fi
+                rm -f "filtered_$filename"
               else
-                echo "❌ Ошибка: $filename"
-                echo "$RESPONSE"
+                echo "⚠️ В файле $filename нет vless/trojan строк"
               fi
             fi
           done
-          
-          if [ ! -f "message_ids.txt" ]; then
-            touch message_ids.txt
-          fi
 
       # Сохраняем новый хеш
       - name: Save new checksum
