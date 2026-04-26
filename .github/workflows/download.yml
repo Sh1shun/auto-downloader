@@ -111,8 +111,7 @@ jobs:
             rm -f message_ids.txt
           fi
 
-      # ★ ИСПРАВЛЕННАЯ ЛОГИКА: извлекаем vless:// строки
-      # Отправляем ВЕСЬ конфиг из каждого файла одним сообщением
+      # Отправляем ВЕСЬ конфиг из каждого файла ОДНИМ сообщением (БЕЗ while для переменных)
       - name: Send vless configs
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -124,29 +123,27 @@ jobs:
           for filepath in new_files/*; do
             filename=$(basename "$filepath" .txt)
             
-            # Собираем все строки vless:// из файла
-            VLESS_LINES=$(grep -E '^vless://' "$filepath" 2>/dev/null || true)
+            # Собираем все строки vless:// из файла в одну переменную
+            VLESS_LINES=$(grep -E '^vless://' "$filepath" 2>/dev/null | sed 's/</\&lt;/g; s/>/\&gt;/g' || true)
             
             if [ -n "$VLESS_LINES" ]; then
-              # Формируем сообщение: заголовок + все строки
-              MESSAGE="<b>${filename}</b>%0A%0A"
+              # Формируем сообщение: заголовок + все строки через перенос
+              MESSAGE="${filename}"$'\n\n'"${VLESS_LINES}"
               
-              # Добавляем каждую строку в блок кода
-              echo "$VLESS_LINES" | while IFS= read -r line; do
-                if [ -n "$line" ]; then
-                  MESSAGE="${MESSAGE}<code>${line}</code>%0A"
-                fi
-              done
+              # Кодируем для URL (заменяем переносы строк и спецсимволы)
+              ENCODED_MESSAGE=$(echo "$MESSAGE" | jq -sRr @uri)
               
-              # Отправляем одним сообщением
               RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
                 -F "chat_id=${TG_CHAT_ID}" \
-                -F "text=${MESSAGE}" \
-                -F "parse_mode=HTML")
+                -F "text=${ENCODED_MESSAGE}")
               
               MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
               if [ -n "$MSG_ID" ]; then
                 echo "$MSG_ID" >> message_ids.txt
+                echo "Отправлен файл: $filename"
+              else
+                echo "Ошибка при отправке $filename"
+                echo "Ответ: $RESPONSE"
               fi
             else
               echo "В файле $filename нет vless-строк"
