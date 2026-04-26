@@ -110,6 +110,7 @@ jobs:
           fi
           
             # Отправляем новые файлы (в заданном порядке)
+           # Отправляем новые файлы (в заданном порядке)
       - name: Send new files
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -137,11 +138,13 @@ jobs:
                 CAPTION="📁 ${filename}"
               fi
               
-              tail -n +7 "$filepath" > /tmp/send_$$_${filename}
+              # Создаём очищенную версию файла
+              tail -n +7 "$filepath" > "/tmp/${filename}"
               
+              # Отправляем с оригинальным именем
               RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
-                -F "document=@/tmp/send_$$_${filename}" \
+                -F "document=@/tmp/${filename}" \
                 -F "caption=${CAPTION}")
               
               MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
@@ -153,7 +156,7 @@ jobs:
                 echo "$RESPONSE"
               fi
               
-              rm -f /tmp/send_$$_${filename}
+              rm -f "/tmp/${filename}"
             fi
           done
 
