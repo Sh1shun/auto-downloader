@@ -1,77 +1,4 @@
-name: Download and send only changed configs
-
-on:
-  schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
-
-jobs:
-  check-and-send:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      # ★ ПРИНУДИТЕЛЬНЫЙ СБРОС: удаляем все файлы состояния
-      - name: Force reset state
-        run: |
-          rm -f last_checksum.txt
-          rm -f message_ids.txt
-          rm -f sending.lock
-          echo "✅ Все файлы состояния удалены"
-
-      # Скачиваем свежие файлы
-      - name: Download fresh files
-        run: |
-          mkdir -p new_files
-          curl -L -o "new_files/WhiteListsRusMobile_MostHelpful.txt" \
-            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt"
-          curl -L -o "new_files/WhiteListsRusMobile2.txt" \
-            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt"
-          curl -L -o "new_files/WhiteCidrRUAll.txt" \
-            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt"
-          curl -L -o "new_files/WhiteCidrRUChecked.txt" \
-            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-checked.txt"
-          curl -L -o "new_files/WhiteSNIRUAll.txt" \
-            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
-
-      # Вычисляем хеш
-      - name: Calculate new checksum
-        id: hash
-        run: |
-          CHECKSUM=$(cat new_files/* 2>/dev/null | md5sum | cut -d' ' -f1)
-          echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
-          echo "$CHECKSUM" > new_checksum.txt
-          echo "Новый хеш: $CHECKSUM"
-
-      # Так как мы удалили старый хеш — changed всегда будет true
-      - name: Set changed flag
-        id: diff
-        run: |
-          echo "changed=true" >> $GITHUB_OUTPUT
-
-      # Удаляем старые сообщения (если есть)
-      - name: Delete old messages
-        env:
-          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          if [ -f "message_ids.txt" ]; then
-            while IFS= read -r msg_id; do
-              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
-                -F "chat_id=${TG_CHAT_ID}" \
-                -F "message_id=${msg_id}" || true
-            done < message_ids.txt
-            rm -f message_ids.txt
-          fi
-
-      # Отправляем каждый файл как отдельное сообщение
-            # Отправляем новые файлы (только vless:// и trojan:// строки)
+      # Отправляем новые файлы
       - name: Send new files
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -83,36 +10,27 @@ jobs:
               filename=$(basename "$filepath")
               echo "Обрабатываем: $filename"
               
-              # Оставляем только строки начинающиеся с vless:// или trojan://
-              grep -E '^(vless://|trojan://)' "$filepath" > "filtered_$filename"
-              
-              if [ -s "filtered_$filename" ]; then
-                RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
-                  -F "chat_id=${TG_CHAT_ID}" \
-                  -F "document=@filtered_$filename" \
-                  -F "caption=${filename}")
-                
-                MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-                if [ -n "$MSG_ID" ]; then
-                  echo "$MSG_ID" >> message_ids.txt
-                  echo "✅ Отправлен: $filename"
-                else
-                  echo "❌ Ошибка: $filename"
-                fi
-                rm -f "filtered_$filename"
+              # Извлекаем дату из файла (строка с # Date/Time:)
+              DATE_LINE=$(grep -E '^# Date/Time:' "$filepath" | head -1)
+              if [ -n "$DATE_LINE" ]; then
+                # Убираем "# Date/Time: " и пробелы в начале/конце
+                DATE_CLEAN=$(echo "$DATE_LINE" | sed 's/^# Date\/Time: //' | sed 's/^[ \t]*//;s/[ \t]*$//')
+                CAPTION="📅 Дата обновления: ${DATE_CLEAN}"
               else
-                echo "⚠️ В файле $filename нет vless/trojan строк"
+                CAPTION="📁 ${filename}"
+              fi
+              
+              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+                -F "chat_id=${TG_CHAT_ID}" \
+                -F "document=@$filepath" \
+                -F "caption=${CAPTION}")
+              
+              MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+              if [ -n "$MSG_ID" ]; then
+                echo "$MSG_ID" >> message_ids.txt
+                echo "✅ Отправлен: $filename"
+              else
+                echo "❌ Ошибка: $filename"
               fi
             fi
           done
-
-      # Сохраняем новый хеш
-      - name: Save new checksum
-        run: |
-          cp new_checksum.txt last_checksum.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add last_checksum.txt message_ids.txt
-          git commit -m "Initial state [skip ci]" || echo "Nothing to commit"
-          git pull origin main --rebase --strategy-option=theirs || true
-          git push
