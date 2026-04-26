@@ -149,13 +149,19 @@ jobs:
           done
 
       # Сохраняем состояние
+       # Сохраняем состояние
       - name: Save state
         if: steps.diff.outputs.changed == 'true'
         run: |
           cp new_checksum.txt last_checksum.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add last_checksum.txt message_ids.txt sending.lock
+          
+          # Добавляем только существующие файлы
+          git add last_checksum.txt
+          [ -f "message_ids.txt" ] && git add message_ids.txt
+          [ -f "sending.lock" ] && git add sending.lock
+          
           git commit -m "Update state [skip ci]" || echo "Nothing to commit"
           git pull origin main --rebase --strategy-option=theirs || true
           git push
