@@ -109,17 +109,15 @@ jobs:
             rm -f message_ids.txt
           fi
           
-           # Отправляем новые файлы (в заданном порядке)
+            # Отправляем новые файлы (в заданном порядке)
       - name: Send new files
         if: steps.diff.outputs.changed == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          # Очищаем старый файл с ID
           rm -f message_ids.txt
           
-          # Определяем порядок файлов
           FILES_IN_ORDER=(
             "WhiteListsRusMobile_MostHelpful.txt"
             "WhiteListsRusMobile2.txt"
@@ -131,7 +129,6 @@ jobs:
           for filename in "${FILES_IN_ORDER[@]}"; do
             filepath="new_files/$filename"
             if [ -f "$filepath" ]; then
-              # Извлекаем дату
               DATE_LINE=$(grep -E '^# Date/Time:' "$filepath" | head -1)
               if [ -n "$DATE_LINE" ]; then
                 DATE_CLEAN=$(echo "$DATE_LINE" | sed 's/^# Date\/Time: //' | sed 's/^[ \t]*//;s/[ \t]*$//')
@@ -140,31 +137,25 @@ jobs:
                 CAPTION="📁 ${filename}"
               fi
               
-              # Создаём временный файл без первых 6 строк
               tail -n +7 "$filepath" > /tmp/send_$$_${filename}
               
-              # Отправляем и сохраняем ID сообщения
               RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
                 -F "document=@/tmp/send_$$_${filename}" \
                 -F "caption=${CAPTION}")
               
-              # Извлекаем message_id из ответа
               MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
               if [ -n "$MSG_ID" ]; then
                 echo "$MSG_ID" >> message_ids.txt
-                echo "✅ Отправлен: $filename (ID: $MSG_ID)"
+                echo "✅ Отправлен: $filename"
               else
-                echo "❌ Ошибка отправки: $filename"
+                echo "❌ Ошибка: $filename"
                 echo "$RESPONSE"
               fi
               
-              # Удаляем временный файл
               rm -f /tmp/send_$$_${filename}
             fi
           done
-          
-          echo "Всего отправлено файлов: $(cat message_ids.txt 2>/dev/null | wc -l)"
 
       # Сохраняем состояние
        # Сохраняем состояние
