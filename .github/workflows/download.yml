@@ -17,12 +17,6 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ★ ВРЕМЕННО: принудительно удаляем старый хеш, чтобы бот отправил файлы
-      - name: Force reset (remove this after first run)
-        run: |
-          rm -f last_checksum.txt
-          echo "Старый хеш удалён, бот отправит файлы"
-
       # Скачиваем свежие файлы
       - name: Download fresh files
         run: |
@@ -67,6 +61,19 @@ jobs:
             echo "changed=false" >> $GITHUB_OUTPUT
           fi
 
+      # ДИАГНОСТИКА
+      - name: Debug info
+        run: |
+          echo "=== РЕЗУЛЬТАТ ==="
+          echo "changed: ${{ steps.diff.outputs.changed }}"
+          echo "=== ХЕШИ ==="
+          echo "Новый: $(cat new_checksum.txt)"
+          echo "Старый: $(cat last_checksum.txt 2>/dev/null || echo 'нет')"
+          echo "=== ФАЙЛЫ ==="
+          ls -la new_files/
+          echo "=== VLESS СТРОКИ ==="
+          grep -c 'vless://' new_files/*.txt 2>/dev/null || echo "0"
+
       # Если нет изменений — выходим
       - name: No changes
         if: steps.diff.outputs.changed == 'false'
@@ -107,11 +114,9 @@ jobs:
         run: |
           if [ -f "message_ids.txt" ]; then
             while IFS= read -r msg_id; do
-              if [ -n "$msg_id" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
-                  -F "chat_id=${TG_CHAT_ID}" \
-                  -F "message_id=${msg_id}" || true
-              fi
+              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
+                -F "chat_id=${TG_CHAT_ID}" \
+                -F "message_id=${msg_id}" || true
             done < message_ids.txt
             rm -f message_ids.txt
           fi
@@ -128,13 +133,10 @@ jobs:
           for filepath in new_files/*; do
             filename=$(basename "$filepath" .txt)
             
-            # Проверяем, есть ли vless строки
             if grep -q '^vless://' "$filepath" 2>/dev/null; then
-              # Собираем все строки
-              VLESS_LINES=$(grep '^vless://' "$filepath" 2>/dev/null | sed 's/</\&lt;/g; s/>/\&gt;/g' || true)
+              VLESS_LINES=$(grep '^vless://' "$filepath" 2>/dev/null)
               
               if [ -n "$VLESS_LINES" ]; then
-                # Формируем сообщение
                 MESSAGE="${filename}"$'\n\n'"${VLESS_LINES}"
                 ENCODED_MESSAGE=$(echo "$MESSAGE" | jq -sRr @uri)
                 
@@ -145,22 +147,21 @@ jobs:
                 MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
                 if [ -n "$MSG_ID" ]; then
                   echo "$MSG_ID" >> message_ids.txt
-                  echo "Отправлен: $filename"
+                  echo "✅ Отправлен: $filename"
                 else
-                  echo "Ошибка отправки $filename"
+                  echo "❌ Ошибка: $filename"
                 fi
               fi
             else
-              echo "Нет vless строк в $filename"
+              echo "⏸️ Нет vless в $filename"
             fi
           done
           
-          # Если файл message_ids.txt не создался — создаём пустой
           if [ ! -f "message_ids.txt" ]; then
             touch message_ids.txt
           fi
 
-      # Сохраняем состояние (с проверкой существования файлов)
+      # Сохраняем состояние
       - name: Save state
         if: steps.diff.outputs.changed == 'true'
         run: |
@@ -168,7 +169,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Добавляем только существующие файлы
           git add last_checksum.txt
           [ -f "message_ids.txt" ] && git add message_ids.txt
           [ -f "sending.lock" ] && git add sending.lock
