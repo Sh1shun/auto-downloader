@@ -17,6 +17,12 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # ★ ВРЕМЕННО: принудительно удаляем старый хеш, чтобы бот отправил файлы
+      - name: Force reset (remove this after first run)
+        run: |
+          rm -f last_checksum.txt
+          echo "Старый хеш удалён, бот отправит файлы"
+
       # Скачиваем свежие файлы
       - name: Download fresh files
         run: |
@@ -32,7 +38,7 @@ jobs:
           curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # Вычисляем хеш для проверки изменений
+      # Вычисляем хеш
       - name: Calculate new checksum
         id: hash
         run: |
@@ -40,7 +46,7 @@ jobs:
           echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
           echo "$CHECKSUM" > new_checksum.txt
 
-      # Читаем старую контрольную сумму
+      # Читаем старый хеш
       - name: Read old checksum
         id: old
         run: |
@@ -51,7 +57,7 @@ jobs:
             echo "checksum=" >> $GITHUB_OUTPUT
           fi
 
-      # Сравниваем хеши
+      # Сравниваем
       - name: Check for changes
         id: diff
         run: |
@@ -66,7 +72,7 @@ jobs:
         if: steps.diff.outputs.changed == 'false'
         run: echo "Изменений нет, завершаем"
 
-      # Блокировка на 15 минут
+      # Блокировка
       - name: Check lock file
         id: lock
         if: steps.diff.outputs.changed == 'true'
@@ -88,7 +94,6 @@ jobs:
         if: steps.lock.outputs.locked == 'true'
         run: exit 0
 
-      # Ставим блокировку
       - name: Set lock
         if: steps.diff.outputs.changed == 'true'
         run: date +%s > sending.lock
@@ -111,7 +116,7 @@ jobs:
             rm -f message_ids.txt
           fi
 
-      # Отправляем ВЕСЬ конфиг из каждого файла ОДНИМ сообщением (БЕЗ while для переменных)
+      # Отправляем vless конфиги
       - name: Send vless configs
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -123,41 +128,51 @@ jobs:
           for filepath in new_files/*; do
             filename=$(basename "$filepath" .txt)
             
-            # Собираем все строки vless:// из файла в одну переменную
-            VLESS_LINES=$(grep -E '^vless://' "$filepath" 2>/dev/null | sed 's/</\&lt;/g; s/>/\&gt;/g' || true)
-            
-            if [ -n "$VLESS_LINES" ]; then
-              # Формируем сообщение: заголовок + все строки через перенос
-              MESSAGE="${filename}"$'\n\n'"${VLESS_LINES}"
+            # Проверяем, есть ли vless строки
+            if grep -q '^vless://' "$filepath" 2>/dev/null; then
+              # Собираем все строки
+              VLESS_LINES=$(grep '^vless://' "$filepath" 2>/dev/null | sed 's/</\&lt;/g; s/>/\&gt;/g' || true)
               
-              # Кодируем для URL (заменяем переносы строк и спецсимволы)
-              ENCODED_MESSAGE=$(echo "$MESSAGE" | jq -sRr @uri)
-              
-              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-                -F "chat_id=${TG_CHAT_ID}" \
-                -F "text=${ENCODED_MESSAGE}")
-              
-              MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-              if [ -n "$MSG_ID" ]; then
-                echo "$MSG_ID" >> message_ids.txt
-                echo "Отправлен файл: $filename"
-              else
-                echo "Ошибка при отправке $filename"
-                echo "Ответ: $RESPONSE"
+              if [ -n "$VLESS_LINES" ]; then
+                # Формируем сообщение
+                MESSAGE="${filename}"$'\n\n'"${VLESS_LINES}"
+                ENCODED_MESSAGE=$(echo "$MESSAGE" | jq -sRr @uri)
+                
+                RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+                  -F "chat_id=${TG_CHAT_ID}" \
+                  -F "text=${ENCODED_MESSAGE}")
+                
+                MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+                if [ -n "$MSG_ID" ]; then
+                  echo "$MSG_ID" >> message_ids.txt
+                  echo "Отправлен: $filename"
+                else
+                  echo "Ошибка отправки $filename"
+                fi
               fi
             else
-              echo "В файле $filename нет vless-строк"
+              echo "Нет vless строк в $filename"
             fi
           done
+          
+          # Если файл message_ids.txt не создался — создаём пустой
+          if [ ! -f "message_ids.txt" ]; then
+            touch message_ids.txt
+          fi
 
-      # Сохраняем состояние
+      # Сохраняем состояние (с проверкой существования файлов)
       - name: Save state
         if: steps.diff.outputs.changed == 'true'
         run: |
           cp new_checksum.txt last_checksum.txt
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add last_checksum.txt message_ids.txt sending.lock
+          
+          # Добавляем только существующие файлы
+          git add last_checksum.txt
+          [ -f "message_ids.txt" ] && git add message_ids.txt
+          [ -f "sending.lock" ] && git add sending.lock
+          
           git commit -m "Update state [skip ci]" || echo "Nothing to commit"
           git pull origin main --rebase --strategy-option=theirs || true
           git push
