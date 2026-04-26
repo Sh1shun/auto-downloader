@@ -32,7 +32,7 @@ jobs:
           curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # Создаём контрольную сумму всех файлов (считаем хеш с полными файлами)
+      # Создаём контрольную сумму всех файлов
       - name: Calculate new checksum
         id: hash
         run: |
@@ -40,17 +40,15 @@ jobs:
           echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
           echo "$CHECKSUM" > new_checksum.txt
 
-      # Читаем старую контрольную сумму из файла в репозитории
+      # Читаем старую контрольную сумму
       - name: Read old checksum
         id: old
         run: |
           if [ -f "last_checksum.txt" ]; then
             OLD=$(cat last_checksum.txt)
             echo "checksum=$OLD" >> $GITHUB_OUTPUT
-            echo "Старый: $OLD"
           else
             echo "checksum=" >> $GITHUB_OUTPUT
-            echo "Старый: не найден"
           fi
 
       # Сравниваем
@@ -59,10 +57,8 @@ jobs:
         run: |
           if [ "${{ steps.hash.outputs.checksum }}" != "${{ steps.old.outputs.checksum }}" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
-            echo "✅ Файлы ИЗМЕНИЛИСЬ!"
           else
             echo "changed=false" >> $GITHUB_OUTPUT
-            echo "⏸️ Файлы не изменились"
           fi
 
       # Если нет изменений — выходим
@@ -80,7 +76,6 @@ jobs:
             NOW=$(date +%s)
             if [ $((NOW - LOCK_TIME)) -lt 900 ]; then
               echo "locked=true" >> $GITHUB_OUTPUT
-              echo "⚠️ Блокировка активна, отправка пропущена"
             else
               echo "locked=false" >> $GITHUB_OUTPUT
               rm -f sending.lock
@@ -91,17 +86,14 @@ jobs:
       
       - name: Exit if locked
         if: steps.lock.outputs.locked == 'true'
-        run: |
-          echo "Пропускаем, так как недавно уже отправляли"
-          exit 0
+        run: exit 0
 
       # Ставим блокировку
       - name: Set lock
         if: steps.diff.outputs.changed == 'true'
-        run: |
-          date +%s > sending.lock
+        run: date +%s > sending.lock
 
-      # Удаляем старые сообщения (если есть файл с ID)
+      # Удаляем старые сообщения
       - name: Delete old messages
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -109,21 +101,15 @@ jobs:
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           if [ -f "message_ids.txt" ]; then
-            echo "Удаляем старые сообщения..."
             while IFS= read -r msg_id; do
-              if [ -n "$msg_id" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
-                  -F "chat_id=${TG_CHAT_ID}" \
-                  -F "message_id=${msg_id}" || true
-                echo "Удалено: $msg_id"
-              fi
+              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
+                -F "chat_id=${TG_CHAT_ID}" \
+                -F "message_id=${msg_id}" || true
             done < message_ids.txt
             rm -f message_ids.txt
-          else
-            echo "Нет старых ID сообщений"
           fi
 
-      # Отправляем новые файлы (удаляем первые 6 строк)
+      # Отправляем новые файлы (через pipe, без промежуточных файлов)
       - name: Send new files
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -134,10 +120,7 @@ jobs:
             if [ -f "$filepath" ]; then
               filename=$(basename "$filepath")
               
-              # Удаляем первые 6 строк из файла
-              tail -n +7 "$filepath" > "cleaned_${filename}"
-              
-              # Извлекаем дату из исходного файла
+              # Извлекаем дату
               DATE_LINE=$(grep -E '^# Date/Time:' "$filepath" | head -1)
               if [ -n "$DATE_LINE" ]; then
                 DATE_CLEAN=$(echo "$DATE_LINE" | sed 's/^# Date\/Time: //' | sed 's/^[ \t]*//;s/[ \t]*$//')
@@ -146,26 +129,17 @@ jobs:
                 CAPTION="📁 ${filename}"
               fi
               
-              # Отправляем очищенный файл
-              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+              # Отправляем файл, удаляя первые 6 строк через tail
+              # Используем process substitution, чтобы не создавать временный файл
+              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
-                -F "document=@cleaned_${filename}" \
-                -F "caption=${CAPTION}")
-              
-              MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-              if [ -n "$MSG_ID" ]; then
-                echo "$MSG_ID" >> message_ids.txt
-                echo "✅ Отправлен: $filename"
-              else
-                echo "❌ Ошибка: $filename"
-                echo "$RESPONSE"
-              fi
-              
-              rm -f "cleaned_${filename}"
+                -F "document=@<(tail -n +7 '$filepath')" \
+                -F "caption=${CAPTION}" \
+                -F "filename=${filename}"
             fi
           done
 
-      # Сохраняем контрольную сумму и ID сообщений в репозиторий
+      # Сохраняем состояние
       - name: Save state
         if: steps.diff.outputs.changed == 'true'
         run: |
