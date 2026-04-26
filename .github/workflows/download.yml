@@ -109,6 +109,7 @@ jobs:
             rm -f message_ids.txt
           fi
           
+           # Отправляем новые файлы (удаляем первые 6 строк)
       - name: Send new files
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -119,7 +120,7 @@ jobs:
             if [ -f "$filepath" ]; then
               filename=$(basename "$filepath")
               
-              # Извлекаем дату из исходного файла
+              # Извлекаем дату
               DATE_LINE=$(grep -E '^# Date/Time:' "$filepath" | head -1)
               if [ -n "$DATE_LINE" ]; then
                 DATE_CLEAN=$(echo "$DATE_LINE" | sed 's/^# Date\/Time: //' | sed 's/^[ \t]*//;s/[ \t]*$//')
@@ -128,26 +129,14 @@ jobs:
                 CAPTION="📁 ${filename}"
               fi
               
-              # Удаляем первые 6 строк во временный файл
-              tail -n +7 "$filepath" > /tmp/clean_$$_${filename}
-              
-              # Отправляем
-              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+              # Отправляем файл, удаляя первые 6 строк через tail
+              # Используем bash process substitution
+              {
+                tail -n +7 "$filepath"
+              } | curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
-                -F "document=@/tmp/clean_$$_${filename}" \
-                -F "caption=${CAPTION}")
-              
-              MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-              if [ -n "$MSG_ID" ]; then
-                echo "$MSG_ID" >> message_ids.txt
-                echo "✅ Отправлен: $filename"
-              else
-                echo "❌ Ошибка: $filename"
-                echo "$RESPONSE"
-              fi
-              
-              # Удаляем временный файл
-              rm -f /tmp/clean_$$_${filename}
+                -F "document=@-;filename=${filename}" \
+                -F "caption=${CAPTION}"
             fi
           done
 
