@@ -36,7 +36,7 @@ jobs:
       - name: Calculate new checksum
         id: hash
         run: |
-          CHECKSUM=$(cat new_files/* | md5sum | cut -d' ' -f1)
+          CHECKSUM=$(cat new_files/* 2>/dev/null | md5sum | cut -d' ' -f1)
           echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
           echo "$CHECKSUM" > new_checksum.txt
 
@@ -66,7 +66,7 @@ jobs:
         if: steps.diff.outputs.changed == 'false'
         run: echo "Изменений нет, завершаем"
 
-      # Блокировка на 15 минут (защита от дублей)
+      # Блокировка на 15 минут
       - name: Check lock file
         id: lock
         if: steps.diff.outputs.changed == 'true'
@@ -93,7 +93,7 @@ jobs:
         if: steps.diff.outputs.changed == 'true'
         run: date +%s > sending.lock
 
-      # Удаляем старые сообщения в канале
+      # Удаляем старые сообщения
       - name: Delete old messages
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -102,14 +102,16 @@ jobs:
         run: |
           if [ -f "message_ids.txt" ]; then
             while IFS= read -r msg_id; do
-              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
-                -F "chat_id=${TG_CHAT_ID}" \
-                -F "message_id=${msg_id}" || true
+              if [ -n "$msg_id" ]; then
+                curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
+                  -F "chat_id=${TG_CHAT_ID}" \
+                  -F "message_id=${msg_id}" || true
+              fi
             done < message_ids.txt
             rm -f message_ids.txt
           fi
 
-      # ★ НОВАЯ ЛОГИКА: извлекаем vless:// строки и отправляем как отдельные сообщения
+      # ★ ИСПРАВЛЕННАЯ ЛОГИКА: извлекаем vless:// строки
       - name: Send vless configs
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -117,23 +119,35 @@ jobs:
           TG_CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           rm -f message_ids.txt
+          
           for filepath in new_files/*; do
             filename=$(basename "$filepath" .txt)
-            # Ищем строки, которые начинаются с vless://
-            grep -E '^vless://' "$filepath" | while read -r vless_line; do
-              # Отправляем как текст (поддерживает копирование по клику)
-              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-                -F "chat_id=${TG_CHAT_ID}" \
-                -F "text=<b>${filename}</b>%0A%0A<code>${vless_line}</code>" \
-                -F "parse_mode=HTML")
-              MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-              if [ -n "$MSG_ID" ]; then
-                echo "$MSG_ID" >> message_ids.txt
-              fi
-            done
+            
+            # Проверяем, есть ли в файле строки с vless://
+            if grep -q 'vless://' "$filepath" 2>/dev/null; then
+              # Извлекаем все строки с vless://
+              grep 'vless://' "$filepath" 2>/dev/null | while IFS= read -r vless_line; do
+                if [ -n "$vless_line" ]; then
+                  # Экранируем спецсимволы для JSON
+                  safe_text=$(printf "%s" "${filename}" | jq -sRr @json)
+                  safe_link=$(printf "%s" "${vless_line}" | jq -sRr @json)
+                  
+                  RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+                    -H "Content-Type: application/json" \
+                    -d "{\"chat_id\":\"${TG_CHAT_ID}\",\"text\":\"<b>${filename}</b>\\n\\n<code>${vless_line}</code>\",\"parse_mode\":\"HTML\"}")
+                  
+                  MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+                  if [ -n "$MSG_ID" ]; then
+                    echo "$MSG_ID" >> message_ids.txt
+                  fi
+                fi
+              done
+            else
+              echo "В файле $filename нет vless-строк"
+            fi
           done
 
-      # Сохраняем новую контрольную сумму и ID сообщений
+      # Сохраняем состояние
       - name: Save state
         if: steps.diff.outputs.changed == 'true'
         run: |
