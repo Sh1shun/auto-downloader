@@ -32,11 +32,11 @@ jobs:
           curl -L -o "new_files/WhiteSNIRUAll.txt" \
             "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
 
-      # Создаём контрольную сумму всех файлов
+      # Создаём контрольную сумму всех файлов (считаем хеш с полными файлами)
       - name: Calculate new checksum
         id: hash
         run: |
-          CHECKSUM=$(cat new_files/* | md5sum | cut -d' ' -f1)
+          CHECKSUM=$(cat new_files/* 2>/dev/null | md5sum | cut -d' ' -f1)
           echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
           echo "$CHECKSUM" > new_checksum.txt
 
@@ -70,7 +70,7 @@ jobs:
         if: steps.diff.outputs.changed == 'false'
         run: echo "Изменений нет, завершаем"
 
-      # === НОВЫЙ ШАГ: Блокировка от дублей ===
+      # Блокировка от дублей
       - name: Check lock file
         id: lock
         if: steps.diff.outputs.changed == 'true'
@@ -78,7 +78,6 @@ jobs:
           if [ -f "sending.lock" ]; then
             LOCK_TIME=$(cat sending.lock)
             NOW=$(date +%s)
-            # Если прошло меньше 15 минут — блокируем
             if [ $((NOW - LOCK_TIME)) -lt 900 ]; then
               echo "locked=true" >> $GITHUB_OUTPUT
               echo "⚠️ Блокировка активна, отправка пропущена"
@@ -124,8 +123,7 @@ jobs:
             echo "Нет старых ID сообщений"
           fi
 
-      # Отправляем новые файлы и сохраняем их ID
-            # Отправляем новые файлы
+      # Отправляем новые файлы (удаляем первые 6 строк)
       - name: Send new files
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -136,7 +134,10 @@ jobs:
             if [ -f "$filepath" ]; then
               filename=$(basename "$filepath")
               
-              # Извлекаем дату из файла
+              # Удаляем первые 6 строк из файла
+              tail -n +7 "$filepath" > "cleaned_${filename}"
+              
+              # Извлекаем дату из исходного файла
               DATE_LINE=$(grep -E '^# Date/Time:' "$filepath" | head -1)
               if [ -n "$DATE_LINE" ]; then
                 DATE_CLEAN=$(echo "$DATE_LINE" | sed 's/^# Date\/Time: //' | sed 's/^[ \t]*//;s/[ \t]*$//')
@@ -145,10 +146,22 @@ jobs:
                 CAPTION="📁 ${filename}"
               fi
               
-              curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+              # Отправляем очищенный файл
+              RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
                 -F "chat_id=${TG_CHAT_ID}" \
-                -F "document=@$filepath" \
-                -F "caption=${CAPTION}"
+                -F "document=@cleaned_${filename}" \
+                -F "caption=${CAPTION}")
+              
+              MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+              if [ -n "$MSG_ID" ]; then
+                echo "$MSG_ID" >> message_ids.txt
+                echo "✅ Отправлен: $filename"
+              else
+                echo "❌ Ошибка: $filename"
+                echo "$RESPONSE"
+              fi
+              
+              rm -f "cleaned_${filename}"
             fi
           done
 
