@@ -1,8 +1,8 @@
 name: Download and send only changed configs
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
+  #schedule:
+  #  - cron: '*/15 * * * *'
   workflow_dispatch:
 
 jobs:
