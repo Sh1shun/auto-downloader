@@ -106,7 +106,30 @@ jobs:
         run: |
           rm -f message_ids.txt
           
-          # === 1. Сначала создаём объединённый файл ===
+     
+          
+          # === 1. Отправляем каждый файл отдельно ===
+          for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
+            filepath="new_files/$filename"
+            [ ! -f "$filepath" ] && continue
+            
+            # Извлекаем дату за один проход
+            DATE_CLEAN=$(grep -E '^# Date/Time:' "$filepath" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
+            CAPTION="📅 Дата обновления: ${DATE_CLEAN:-$filename}"
+            
+            # Очищаем и отправляем
+            tail -n +7 "$filepath" > "/tmp/${filename}"
+            RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+              -F "chat_id=${TG_CHAT_ID}" \
+              -F "document=@/tmp/${filename}" \
+              -F "caption=${CAPTION}")
+            
+            MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+            [ -n "$MSG_ID" ] && echo "$MSG_ID" >> message_ids.txt
+            
+            rm -f "/tmp/${filename}"
+          done
+               # === 2. Сначала создаём объединённый файл ===
           # Извлекаем дату из первого файла (для подписи)
           FIRST_FILE="new_files/WhiteListsRusMobile_MostHelpful.txt"
           DATE_CLEAN=$(grep -E '^# Date/Time:' "$FIRST_FILE" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
@@ -132,28 +155,6 @@ jobs:
           [ -n "$MSG_ID_ALL" ] && echo "$MSG_ID_ALL" >> message_ids.txt
           
           rm -f "/tmp/ALL_CONFIGS.txt"
-          
-          # === 2. Отправляем каждый файл отдельно ===
-          for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
-            filepath="new_files/$filename"
-            [ ! -f "$filepath" ] && continue
-            
-            # Извлекаем дату за один проход
-            DATE_CLEAN=$(grep -E '^# Date/Time:' "$filepath" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
-            CAPTION="📅 Дата обновления: ${DATE_CLEAN:-$filename}"
-            
-            # Очищаем и отправляем
-            tail -n +7 "$filepath" > "/tmp/${filename}"
-            RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
-              -F "chat_id=${TG_CHAT_ID}" \
-              -F "document=@/tmp/${filename}" \
-              -F "caption=${CAPTION}")
-            
-            MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-            [ -n "$MSG_ID" ] && echo "$MSG_ID" >> message_ids.txt
-            
-            rm -f "/tmp/${filename}"
-          done
 
       # Сохраняем состояние
       - name: Save state
