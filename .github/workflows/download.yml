@@ -98,6 +98,7 @@ jobs:
           rm -f message_ids.txt
 
       # Отправляем файлы (оптимизировано) + объединённый файл
+         # Отправляем файлы (оптимизировано) + объединённый файл
       - name: Send new files
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -106,34 +107,41 @@ jobs:
         run: |
           rm -f message_ids.txt
           
-          # === 1. Сначала создаём объединённый файл (без мета-информации) ===
-          echo "════════════════════════════════════════════════════════════" > /tmp/ALL_CONFIGS.txt
-          echo "📁 ОБЪЕДИНЁННЫЙ ФАЙЛ ВСЕХ КОНФИГОВ" >> /tmp/ALL_CONFIGS.txt
-          echo "════════════════════════════════════════════════════════════" >> /tmp/ALL_CONFIGS.txt
+          # === 1. Сначала создаём объединённый файл в ТОЧНО таком же формате, как оригиналы ===
           
+          # Берём первый файл как источник мета-информации (дата, версия, и т.д.)
+          SAMPLE_FILE="new_files/WhiteListsRusMobile_MostHelpful.txt"
+          
+          # Извлекаем всю шапку (первые 6 строк) из образца
+          HEADER=$(head -6 "$SAMPLE_FILE")
+          
+          # Создаём новый файл с такой же шапкой (но с изменённым названием в # Name)
+          {
+            echo "$HEADER" | sed 's/^# Name:.*/# Name: ALL_CONFIGS (combined)/'
+            echo ""
+          } > /tmp/ALL_CONFIGS.txt
+          
+          # Теперь добавляем содержимое всех файлов (удаляя их собственные шапки)
           for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
             filepath="new_files/$filename"
             if [ -f "$filepath" ]; then
-              echo "" >> /tmp/ALL_CONFIGS.txt
-              echo "▶▶▶ ${filename} ◀◀◀" >> /tmp/ALL_CONFIGS.txt
-              echo "" >> /tmp/ALL_CONFIGS.txt
-              # Удаляем первые 6 строк и добавляем в общий файл
+              # Удаляем первые 6 строк (шапку) и добавляем в общий файл
               tail -n +7 "$filepath" >> /tmp/ALL_CONFIGS.txt
             fi
           done
           
-          # Отправляем объединённый файл (шестым)
+          # Отправляем объединённый файл (как обычный конфиг)
           RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
             -F "chat_id=${TG_CHAT_ID}" \
             -F "document=@/tmp/ALL_CONFIGS.txt" \
-            -F "caption=📦 ВСЕ КОНФИГИ В ОДНОМ ФАЙЛЕ")
+            -F "caption=📦 ALL_CONFIGS (combined) | Updated from 5 sources")
           
           MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
           [ -n "$MSG_ID" ] && echo "$MSG_ID" >> message_ids.txt
           
           rm -f /tmp/ALL_CONFIGS.txt
           
-          # === 2. Отправляем каждый файл отдельно ===
+          # === 2. Отправляем каждый файл отдельно (оставляем как было) ===
           for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
             filepath="new_files/$filename"
             [ ! -f "$filepath" ] && continue
