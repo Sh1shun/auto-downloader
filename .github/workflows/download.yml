@@ -117,11 +117,6 @@ jobs:
             for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
               filepath="new_files/$filename"
               if [ -f "$filepath" ]; then
-                echo ""
-                echo "# ============================================================ #"
-                echo "# Файл: ${filename}"
-                echo "# ============================================================ #"
-                echo ""
                 tail -n +7 "$filepath"
               fi
             done
