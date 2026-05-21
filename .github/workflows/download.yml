@@ -97,8 +97,7 @@ jobs:
           done < message_ids.txt
           rm -f message_ids.txt
 
-      # Отправляем файлы (оптимизировано) + объединённый файл
-         # Отправляем файлы (оптимизировано) + объединённый файл
+      # Отправляем файлы (оптимизировано)
       - name: Send new files
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -107,41 +106,39 @@ jobs:
         run: |
           rm -f message_ids.txt
           
-          # === 1. Сначала создаём объединённый файл в ТОЧНО таком же формате, как оригиналы ===
+          # === 1. Сначала создаём объединённый файл ===
+          # Извлекаем дату из первого файла (для подписи)
+          FIRST_FILE="new_files/WhiteListsRusMobile_MostHelpful.txt"
+          DATE_CLEAN=$(grep -E '^# Date/Time:' "$FIRST_FILE" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
+          CAPTION_ALL="📅 Дата обновления: ${DATE_CLEAN} (Все конфиги в одном файле)"
           
-          # Берём первый файл как источник мета-информации (дата, версия, и т.д.)
-          SAMPLE_FILE="new_files/WhiteListsRusMobile_MostHelpful.txt"
-          
-          # Извлекаем всю шапку (первые 6 строк) из образца
-          HEADER=$(head -6 "$SAMPLE_FILE")
-          
-          # Создаём новый файл с такой же шапкой (но с изменённым названием в # Name)
+          # Объединяем все файлы (без первых 6 строк каждого)
           {
-            echo "$HEADER" | sed 's/^# Name:.*/# Name: ALL_CONFIGS (combined)/'
-            echo ""
-          } > /tmp/ALL_CONFIGS.txt
+            for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
+              filepath="new_files/$filename"
+              if [ -f "$filepath" ]; then
+                echo ""
+                echo "# ============================================================ #"
+                echo "# Файл: ${filename}"
+                echo "# ============================================================ #"
+                echo ""
+                tail -n +7 "$filepath"
+              fi
+            done
+          } > "/tmp/ALL_CONFIGS.txt"
           
-          # Теперь добавляем содержимое всех файлов (удаляя их собственные шапки)
-          for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
-            filepath="new_files/$filename"
-            if [ -f "$filepath" ]; then
-              # Удаляем первые 6 строк (шапку) и добавляем в общий файл
-              tail -n +7 "$filepath" >> /tmp/ALL_CONFIGS.txt
-            fi
-          done
-          
-          # Отправляем объединённый файл (как обычный конфиг)
-          RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+          # Отправляем объединённый файл
+          RESPONSE_ALL=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
             -F "chat_id=${TG_CHAT_ID}" \
             -F "document=@/tmp/ALL_CONFIGS.txt" \
-            -F "caption=📦 ALL_CONFIGS (combined) | Updated from 5 sources")
+            -F "caption=${CAPTION_ALL}")
           
-          MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-          [ -n "$MSG_ID" ] && echo "$MSG_ID" >> message_ids.txt
+          MSG_ID_ALL=$(echo "$RESPONSE_ALL" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
+          [ -n "$MSG_ID_ALL" ] && echo "$MSG_ID_ALL" >> message_ids.txt
           
-          rm -f /tmp/ALL_CONFIGS.txt
+          rm -f "/tmp/ALL_CONFIGS.txt"
           
-          # === 2. Отправляем каждый файл отдельно (оставляем как было) ===
+          # === 2. Отправляем каждый файл отдельно ===
           for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
             filepath="new_files/$filename"
             [ ! -f "$filepath" ] && continue
@@ -169,7 +166,7 @@ jobs:
         run: |
           cp new_checksum.txt last_checksum.txt
           git config user.name "github-actions[bot]"
-          git config.user email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add last_checksum.txt
           [ -f "message_ids.txt" ] && git add message_ids.txt
           [ -f "sending.lock" ] && git add sending.lock
