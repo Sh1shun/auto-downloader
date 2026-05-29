@@ -156,19 +156,7 @@ jobs:
           
           rm -f "/tmp/ALL_CONFIGS.txt"
 
-      # Сохраняем состояние
-      - name: Save state
-        if: steps.diff.outputs.changed == 'true'
-        run: |
-          cp new_checksum.txt last_checksum.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add last_checksum.txt
-          [ -f "message_ids.txt" ] && git add message_ids.txt
-          [ -f "sending.lock" ] && git add sending.lock
-          git commit -m "Update state [skip ci]" || true
-          git pull origin main --rebase --strategy-option=theirs || true
-          git push
+    
 
       - name: Get chat_id from VK API
         env:
@@ -197,7 +185,114 @@ jobs:
             echo "3. Включены ли сообщения сообщества?"
           fi
 
+          # === 3. ОТПРАВКА В БЕСЕДУ ВК ===
+      - name: Send to VK Chat
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+          VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
+          VK_CHAT_ID: ${{ secrets.VK_CHAT_ID }}
+        run: |
+          # Рассчитываем peer_id для беседы
+          PEER_ID=$((2000000000 + ${{ secrets.VK_CHAT_ID }}))
+          
+          # Отправляем каждый файл отдельно
+          for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
+            filepath="new_files/$filename"
+            [ ! -f "$filepath" ] && continue
+            
+            DATE_CLEAN=$(grep -E '^# Date/Time:' "$filepath" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
+            CAPTION="📅 Дата обновления: ${DATE_CLEAN:-$filename}"
+            
+            # Очищаем файл (удаляем первые 6 строк)
+            tail -n +7 "$filepath" > "/tmp/clean_${filename}"
+            
+            # Получаем URL для загрузки
+            UPLOAD_URL=$(curl -s -X POST "https://api.vk.com/method/docs.getUploadServer?group_id=${VK_GROUP_ID}&access_token=${VK_TOKEN}&v=5.131" | jq -r '.response.upload_url')
+            
+            # Загружаем файл
+            UPLOAD_RESPONSE=$(curl -s -F "file=@/tmp/clean_${filename}" "$UPLOAD_URL")
+            
+            # Сохраняем в документах
+            SAVE_RESULT=$(curl -s -X POST "https://api.vk.com/method/docs.save" \
+              -F "file=${UPLOAD_RESPONSE}" \
+              -F "title=${filename}" \
+              -F "access_token=${VK_TOKEN}" \
+              -F "v=5.131")
+            
+            # Получаем ID документа
+            DOC_OWNER_ID=$(echo "$SAVE_RESULT" | jq -r '.response.doc.owner_id')
+            DOC_ID=$(echo "$SAVE_RESULT" | jq -r '.response.doc.id')
+            ATTACHMENT="doc${DOC_OWNER_ID}_${DOC_ID}"
+            
+            # Отправляем сообщение в беседу
+            RANDOM_ID=$(shuf -i 1-2147483647 -n 1)
+            curl -s -X POST "https://api.vk.com/method/messages.send" \
+              -F "peer_id=${PEER_ID}" \
+              -F "random_id=${RANDOM_ID}" \
+              -F "message=${CAPTION}" \
+              -F "attachment=${ATTACHMENT}" \
+              -F "access_token=${VK_TOKEN}" \
+              -F "v=5.131"
+            
+            rm -f "/tmp/clean_${filename}"
+          done
+          
+          # === Объединённый файл отдельным сообщением ===
+          echo "📦 Отправляем объединённый файл в беседу..."
+          
+          FIRST_FILE="new_files/WhiteListsRusMobile_MostHelpful.txt"
+          DATE_CLEAN=$(grep -E '^# Date/Time:' "$FIRST_FILE" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
+          CAPTION_ALL="📅 Дата обновления: ${DATE_CLEAN} 📦 ВСЕ КОНФИГИ В ОДНОМ ФАЙЛЕ"
+          
+          # Создаём объединённый файл
+          {
+            for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
+              filepath="new_files/$filename"
+              if [ -f "$filepath" ]; then
+                tail -n +7 "$filepath"
+              fi
+            done
+          } > "/tmp/ALL_CONFIGS.txt"
+          
+          # Загружаем
+          UPLOAD_URL_ALL=$(curl -s -X POST "https://api.vk.com/method/docs.getUploadServer?group_id=${VK_GROUP_ID}&access_token=${VK_TOKEN}&v=5.131" | jq -r '.response.upload_url')
+          UPLOAD_RESPONSE_ALL=$(curl -s -F "file=@/tmp/ALL_CONFIGS.txt" "$UPLOAD_URL_ALL")
+          SAVE_RESULT_ALL=$(curl -s -X POST "https://api.vk.com/method/docs.save" \
+            -F "file=${UPLOAD_RESPONSE_ALL}" \
+            -F "title=ALL_CONFIGS.txt" \
+            -F "access_token=${VK_TOKEN}" \
+            -F "v=5.131")
+          
+          DOC_OWNER_ID_ALL=$(echo "$SAVE_RESULT_ALL" | jq -r '.response.doc.owner_id')
+          DOC_ID_ALL=$(echo "$SAVE_RESULT_ALL" | jq -r '.response.doc.id')
+          ATTACHMENT_ALL="doc${DOC_OWNER_ID_ALL}_${DOC_ID_ALL}"
+          
+          # Отправляем
+          RANDOM_ID_ALL=$(shuf -i 1-2147483647 -n 1)
+          curl -s -X POST "https://api.vk.com/method/messages.send" \
+            -F "peer_id=${PEER_ID}" \
+            -F "random_id=${RANDOM_ID_ALL}" \
+            -F "message=${CAPTION_ALL}" \
+            -F "attachment=${ATTACHMENT_ALL}" \
+            -F "access_token=${VK_TOKEN}" \
+            -F "v=5.131"
+          
+          rm -f "/tmp/ALL_CONFIGS.txt"
 
+      # Сохраняем состояние
+      - name: Save state
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          cp new_checksum.txt last_checksum.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_checksum.txt
+          [ -f "message_ids.txt" ] && git add message_ids.txt
+          [ -f "sending.lock" ] && git add sending.lock
+          git commit -m "Update state [skip ci]" || true
+          git pull origin main --rebase --strategy-option=theirs || true
+          git push
 
 
 
