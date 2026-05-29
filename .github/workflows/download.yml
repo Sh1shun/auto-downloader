@@ -185,7 +185,7 @@ jobs:
             echo "3. Включены ли сообщения сообщества?"
           fi
 
-          # === 3. ОТПРАВКА В БЕСЕДУ ВК ===
+            # === 3. ОТПРАВКА В БЕСЕДУ ВК (с проверками на ошибки) ===
       - name: Send to VK Chat
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -193,10 +193,15 @@ jobs:
           VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
           VK_CHAT_ID: ${{ secrets.VK_CHAT_ID }}
         run: |
-          # Рассчитываем peer_id для беседы
-          PEER_ID=$((2000000000 + ${{ secrets.VK_CHAT_ID }}))
-          
-          # Отправляем каждый файл отдельно
+          # 1. Рассчитываем peer_id
+          if [ -z "$VK_CHAT_ID" ]; then
+            echo "❌ Ошибка: VK_CHAT_ID не задан в секретах!"
+            exit 1
+          fi
+          PEER_ID=$((2000000000 + VK_CHAT_ID))
+          echo "✅ Peer_ID рассчитан: $PEER_ID"
+
+          # 2. Отправляем каждый файл отдельно
           for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
             filepath="new_files/$filename"
             [ ! -f "$filepath" ] && continue
@@ -204,48 +209,69 @@ jobs:
             DATE_CLEAN=$(grep -E '^# Date/Time:' "$filepath" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
             CAPTION="📅 Дата обновления: ${DATE_CLEAN:-$filename}"
             
-            # Очищаем файл (удаляем первые 6 строк)
+            # Очищаем файл
             tail -n +7 "$filepath" > "/tmp/clean_${filename}"
             
-            # Получаем URL для загрузки
-            UPLOAD_URL=$(curl -s -X POST "https://api.vk.com/method/docs.getUploadServer?group_id=${VK_GROUP_ID}&access_token=${VK_TOKEN}&v=5.131" | jq -r '.response.upload_url')
+            # 2.1 Получаем URL для загрузки
+            echo "📤 Загружаем $filename..."
+            UPLOAD_URL_RESP=$(curl -s -X POST "https://api.vk.com/method/docs.getUploadServer?group_id=${VK_GROUP_ID}&access_token=${VK_TOKEN}&v=5.131")
             
-            # Загружаем файл
+            # Проверяем ответ на наличие ошибки
+            if echo "$UPLOAD_URL_RESP" | grep -q '"error"'; then
+              echo "❌ Ошибка API при получении upload_url: $UPLOAD_URL_RESP"
+              continue
+            fi
+            
+            UPLOAD_URL=$(echo "$UPLOAD_URL_RESP" | jq -r '.response.upload_url')
+            if [ -z "$UPLOAD_URL" ] || [ "$UPLOAD_URL" == "null" ]; then
+              echo "❌ Не удалось получить upload_url. Ответ: $UPLOAD_URL_RESP"
+              continue
+            fi
+            
+            # 2.2 Загружаем файл
             UPLOAD_RESPONSE=$(curl -s -F "file=@/tmp/clean_${filename}" "$UPLOAD_URL")
             
-            # Сохраняем в документах
+            # 2.3 Сохраняем документ
             SAVE_RESULT=$(curl -s -X POST "https://api.vk.com/method/docs.save" \
               -F "file=${UPLOAD_RESPONSE}" \
               -F "title=${filename}" \
               -F "access_token=${VK_TOKEN}" \
               -F "v=5.131")
             
-            # Получаем ID документа
+            if echo "$SAVE_RESULT" | grep -q '"error"'; then
+              echo "❌ Ошибка при сохранении документа: $SAVE_RESULT"
+              continue
+            fi
+            
             DOC_OWNER_ID=$(echo "$SAVE_RESULT" | jq -r '.response.doc.owner_id')
             DOC_ID=$(echo "$SAVE_RESULT" | jq -r '.response.doc.id')
             ATTACHMENT="doc${DOC_OWNER_ID}_${DOC_ID}"
             
-            # Отправляем сообщение в беседу
+            # 2.4 Отправляем сообщение в беседу
             RANDOM_ID=$(shuf -i 1-2147483647 -n 1)
-            curl -s -X POST "https://api.vk.com/method/messages.send" \
+            SEND_RESULT=$(curl -s -X POST "https://api.vk.com/method/messages.send" \
               -F "peer_id=${PEER_ID}" \
               -F "random_id=${RANDOM_ID}" \
               -F "message=${CAPTION}" \
               -F "attachment=${ATTACHMENT}" \
               -F "access_token=${VK_TOKEN}" \
-              -F "v=5.131"
+              -F "v=5.131")
+            
+            if echo "$SEND_RESULT" | grep -q '"error"'; then
+              echo "❌ Ошибка при отправке сообщения: $SEND_RESULT"
+            else
+              echo "✅ Отправлен: $filename"
+            fi
             
             rm -f "/tmp/clean_${filename}"
           done
           
-          # === Объединённый файл отдельным сообщением ===
+          # 3. Отправляем объединённый файл (логика та же, с проверками)
           echo "📦 Отправляем объединённый файл в беседу..."
-          
           FIRST_FILE="new_files/WhiteListsRusMobile_MostHelpful.txt"
           DATE_CLEAN=$(grep -E '^# Date/Time:' "$FIRST_FILE" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
           CAPTION_ALL="📅 Дата обновления: ${DATE_CLEAN} 📦 ВСЕ КОНФИГИ В ОДНОМ ФАЙЛЕ"
           
-          # Создаём объединённый файл
           {
             for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
               filepath="new_files/$filename"
@@ -255,29 +281,40 @@ jobs:
             done
           } > "/tmp/ALL_CONFIGS.txt"
           
-          # Загружаем
-          UPLOAD_URL_ALL=$(curl -s -X POST "https://api.vk.com/method/docs.getUploadServer?group_id=${VK_GROUP_ID}&access_token=${VK_TOKEN}&v=5.131" | jq -r '.response.upload_url')
-          UPLOAD_RESPONSE_ALL=$(curl -s -F "file=@/tmp/ALL_CONFIGS.txt" "$UPLOAD_URL_ALL")
-          SAVE_RESULT_ALL=$(curl -s -X POST "https://api.vk.com/method/docs.save" \
-            -F "file=${UPLOAD_RESPONSE_ALL}" \
-            -F "title=ALL_CONFIGS.txt" \
-            -F "access_token=${VK_TOKEN}" \
-            -F "v=5.131")
-          
-          DOC_OWNER_ID_ALL=$(echo "$SAVE_RESULT_ALL" | jq -r '.response.doc.owner_id')
-          DOC_ID_ALL=$(echo "$SAVE_RESULT_ALL" | jq -r '.response.doc.id')
-          ATTACHMENT_ALL="doc${DOC_OWNER_ID_ALL}_${DOC_ID_ALL}"
-          
-          # Отправляем
-          RANDOM_ID_ALL=$(shuf -i 1-2147483647 -n 1)
-          curl -s -X POST "https://api.vk.com/method/messages.send" \
-            -F "peer_id=${PEER_ID}" \
-            -F "random_id=${RANDOM_ID_ALL}" \
-            -F "message=${CAPTION_ALL}" \
-            -F "attachment=${ATTACHMENT_ALL}" \
-            -F "access_token=${VK_TOKEN}" \
-            -F "v=5.131"
-          
+          UPLOAD_URL_RESP_ALL=$(curl -s -X POST "https://api.vk.com/method/docs.getUploadServer?group_id=${VK_GROUP_ID}&access_token=${VK_TOKEN}&v=5.131")
+          if echo "$UPLOAD_URL_RESP_ALL" | grep -q '"error"'; then
+            echo "❌ Ошибка API: $UPLOAD_URL_RESP_ALL"
+          else
+            UPLOAD_URL_ALL=$(echo "$UPLOAD_URL_RESP_ALL" | jq -r '.response.upload_url')
+            UPLOAD_RESPONSE_ALL=$(curl -s -F "file=@/tmp/ALL_CONFIGS.txt" "$UPLOAD_URL_ALL")
+            SAVE_RESULT_ALL=$(curl -s -X POST "https://api.vk.com/method/docs.save" \
+              -F "file=${UPLOAD_RESPONSE_ALL}" \
+              -F "title=ALL_CONFIGS.txt" \
+              -F "access_token=${VK_TOKEN}" \
+              -F "v=5.131")
+            
+            if echo "$SAVE_RESULT_ALL" | grep -q '"error"'; then
+              echo "❌ Ошибка при сохранении объединённого файла: $SAVE_RESULT_ALL"
+            else
+              DOC_OWNER_ID_ALL=$(echo "$SAVE_RESULT_ALL" | jq -r '.response.doc.owner_id')
+              DOC_ID_ALL=$(echo "$SAVE_RESULT_ALL" | jq -r '.response.doc.id')
+              ATTACHMENT_ALL="doc${DOC_OWNER_ID_ALL}_${DOC_ID_ALL}"
+              RANDOM_ID_ALL=$(shuf -i 1-2147483647 -n 1)
+              SEND_RESULT_ALL=$(curl -s -X POST "https://api.vk.com/method/messages.send" \
+                -F "peer_id=${PEER_ID}" \
+                -F "random_id=${RANDOM_ID_ALL}" \
+                -F "message=${CAPTION_ALL}" \
+                -F "attachment=${ATTACHMENT_ALL}" \
+                -F "access_token=${VK_TOKEN}" \
+                -F "v=5.131")
+              
+              if echo "$SEND_RESULT_ALL" | grep -q '"error"'; then
+                echo "❌ Ошибка при отправке объединённого файла: $SEND_RESULT_ALL"
+              else
+                echo "✅ Отправлен объединённый файл"
+              fi
+            fi
+          fi
           rm -f "/tmp/ALL_CONFIGS.txt"
 
       # Сохраняем состояние
