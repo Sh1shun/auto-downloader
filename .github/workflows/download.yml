@@ -169,3 +169,30 @@ jobs:
           git commit -m "Update state [skip ci]" || true
           git pull origin main --rebase --strategy-option=theirs || true
           git push
+
+      - name: Get chat_id from VK API
+        env:
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+        run: |
+          # Получаем список всех бесед, где есть бот
+          RESPONSE=$(curl -s "https://api.vk.com/method/messages.getConversations?access_token=${VK_TOKEN}&v=5.131&count=20&filter=all")
+          
+          # Выводим полный ответ для диагностики
+          echo "Ответ API:"
+          echo "$RESPONSE" | jq .
+          
+          # Ищем peer_id (будет 20000000XX)
+          PEER_ID=$(echo "$RESPONSE" | jq -r '.response.items[]? | select(.conversation.peer.type == "chat") | .conversation.peer.id' | head -1)
+          
+          if [ -n "$PEER_ID" ] && [ "$PEER_ID" != "null" ]; then
+            CHAT_ID=$((PEER_ID - 2000000000))
+            echo "✅ Найден peer_id: $PEER_ID"
+            echo "✅ chat_id для секрета VK_CHAT_ID: $CHAT_ID"
+            echo "VK_CHAT_ID=$CHAT_ID" >> $GITHUB_ENV
+          else
+            echo "❌ Беседа не найдена."
+            echo "Проверь:"
+            echo "1. Бот добавлен в беседу?"
+            echo "2. У токена есть право 'messages'?"
+            echo "3. Включены ли сообщения сообщества?"
+          fi
