@@ -102,7 +102,7 @@ jobs:
           # === 2. Объединённый файл ===
           FIRST_FILE="new_files/WhiteListsRusMobile_MostHelpful.txt"
           DATE_CLEAN=$(grep -E '^# Date/Time:' "$FIRST_FILE" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
-          CAPTION_ALL="📅 Дата обновления: ${DATE_CLEAN} (Все конфиги в одном файле)"
+          CAPTION_ALL="📅 Дата обновления: ${DATE_CLEAN}"
           
           {
             for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
