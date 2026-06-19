@@ -201,32 +201,7 @@ jobs:
           PEER_ID=$((2000000000 + VK_CHAT_ID))
           echo "✅ Peer_ID рассчитан: $PEER_ID"
 
-          # 2. Отправляем каждый файл отдельно
-          for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
-            filepath="new_files/$filename"
-            [ ! -f "$filepath" ] && continue
-            
-            DATE_CLEAN=$(grep -E '^# Date/Time:' "$filepath" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
-            CAPTION="📅 Дата обновления: ${DATE_CLEAN:-$filename}"
-            
-            # Очищаем файл
-            tail -n +7 "$filepath" > "/tmp/clean_${filename}"
-            
-            # 2.1 Получаем URL для загрузки
-            echo "📤 Загружаем $filename..."
-            UPLOAD_URL_RESP=$(curl -s -X POST "https://api.vk.com/method/docs.getUploadServer?group_id=${VK_GROUP_ID}&access_token=${VK_TOKEN}&v=5.131")
-            
-            # Проверяем ответ на наличие ошибки
-            if echo "$UPLOAD_URL_RESP" | grep -q '"error"'; then
-              echo "❌ Ошибка API при получении upload_url: $UPLOAD_URL_RESP"
-              continue
-            fi
-            
-            UPLOAD_URL=$(echo "$UPLOAD_URL_RESP" | jq -r '.response.upload_url')
-            if [ -z "$UPLOAD_URL" ] || [ "$UPLOAD_URL" == "null" ]; then
-              echo "❌ Не удалось получить upload_url. Ответ: $UPLOAD_URL_RESP"
-              continue
-            fi
+       
             
             # 2.2 Загружаем файл
             UPLOAD_RESPONSE=$(curl -s -F "file=@/tmp/clean_${filename}" "$UPLOAD_URL")
