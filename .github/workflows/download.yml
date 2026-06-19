@@ -83,8 +83,8 @@ jobs:
         if: steps.diff.outputs.changed == 'true'
         run: date +%s > sending.lock
 
-      # === Удаляем старые сообщения в Telegram ===
-      - name: Delete old Telegram messages
+      # Удаляем старые сообщения
+      - name: Delete old messages
         if: steps.diff.outputs.changed == 'true'
         env:
           TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
@@ -97,34 +97,9 @@ jobs:
           done < message_ids.txt
           rm -f message_ids.txt
 
-      # === 1. ОТПРАВКА В TELEGRAM ===
-      - name: Send to Telegram
-        if: steps.diff.outputs.changed == 'true'
-        env:
-          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          rm -f message_ids.txt
+      
           
-          for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
-            filepath="new_files/$filename"
-            [ ! -f "$filepath" ] && continue
-            
-            DATE_CLEAN=$(grep -E '^# Date/Time:' "$filepath" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
-            CAPTION="📅 Дата обновления: ${DATE_CLEAN:-$filename}"
-            
-            tail -n +7 "$filepath" > "/tmp/${filename}"
-            RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
-              -F "chat_id=${TG_CHAT_ID}" \
-              -F "document=@/tmp/${filename}" \
-              -F "caption=${CAPTION}")
-            
-            MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-            [ -n "$MSG_ID" ] && echo "$MSG_ID" >> message_ids.txt
-            rm -f "/tmp/${filename}"
-          done
-          
-          # Объединённый файл
+          # === 2. Объединённый файл ===
           FIRST_FILE="new_files/WhiteListsRusMobile_MostHelpful.txt"
           DATE_CLEAN=$(grep -E '^# Date/Time:' "$FIRST_FILE" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
           CAPTION_ALL="📅 Дата обновления: ${DATE_CLEAN} (Все конфиги в одном файле)"
@@ -145,136 +120,7 @@ jobs:
           
           MSG_ID_ALL=$(echo "$RESPONSE_ALL" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
           [ -n "$MSG_ID_ALL" ] && echo "$MSG_ID_ALL" >> message_ids.txt
-          rm -f "/tmp/ALL_CONFIGS.txt"
-
-      # === 2. ОТПРАВКА В БЕСЕДУ ВК ===
-      - name: Send to VK Chat
-        if: steps.diff.outputs.changed == 'true'
-        env:
-          VK_TOKEN: ${{ secrets.VK_TOKEN }}
-          VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
-          VK_CHAT_ID: ${{ secrets.VK_CHAT_ID }}
-        run: |
-          # 1. Рассчитываем peer_id
-          if [ -z "$VK_CHAT_ID" ]; then
-            echo "❌ Ошибка: VK_CHAT_ID не задан в секретах!"
-            exit 1
-          fi
-          PEER_ID=$((2000000000 + VK_CHAT_ID))
-          echo "✅ Peer_ID рассчитан: $PEER_ID"
           
-          # 2. Отправляем каждый файл отдельно
-          for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
-            filepath="new_files/$filename"
-            [ ! -f "$filepath" ] && continue
-            
-            DATE_CLEAN=$(grep -E '^# Date/Time:' "$filepath" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
-            CAPTION="📅 Дата обновления: ${DATE_CLEAN:-$filename}"
-            
-            tail -n +7 "$filepath" > "/tmp/clean_${filename}"
-            
-            # 2.1 Получаем URL для загрузки
-            echo "📤 Загружаем $filename..."
-            UPLOAD_URL_RESP=$(curl -s -X POST "https://api.vk.com/method/docs.getUploadServer?group_id=${VK_GROUP_ID}&access_token=${VK_TOKEN}&v=5.131")
-            
-            if echo "$UPLOAD_URL_RESP" | grep -q '"error"'; then
-              echo "❌ Ошибка API при получении upload_url: $UPLOAD_URL_RESP"
-              continue
-            fi
-            
-            UPLOAD_URL=$(echo "$UPLOAD_URL_RESP" | jq -r '.response.upload_url')
-            if [ -z "$UPLOAD_URL" ] || [ "$UPLOAD_URL" == "null" ]; then
-              echo "❌ Не удалось получить upload_url. Ответ: $UPLOAD_URL_RESP"
-              continue
-            fi
-            
-            # 2.2 Загружаем файл
-            UPLOAD_RESPONSE=$(curl -s -F "file=@/tmp/clean_${filename}" "$UPLOAD_URL")
-            
-            # 2.3 Сохраняем документ
-            SAVE_RESULT=$(curl -s -X POST "https://api.vk.com/method/docs.save" \
-              -F "file=${UPLOAD_RESPONSE}" \
-              -F "title=${filename}" \
-              -F "access_token=${VK_TOKEN}" \
-              -F "v=5.131")
-            
-            if echo "$SAVE_RESULT" | grep -q '"error"'; then
-              echo "❌ Ошибка при сохранении документа: $SAVE_RESULT"
-              continue
-            fi
-            
-            DOC_OWNER_ID=$(echo "$SAVE_RESULT" | jq -r '.response.doc.owner_id')
-            DOC_ID=$(echo "$SAVE_RESULT" | jq -r '.response.doc.id')
-            ATTACHMENT="doc${DOC_OWNER_ID}_${DOC_ID}"
-            
-            # 2.4 Отправляем сообщение в беседу
-            RANDOM_ID=$(shuf -i 1-2147483647 -n 1)
-            SEND_RESULT=$(curl -s -X POST "https://api.vk.com/method/messages.send" \
-              -F "peer_id=${PEER_ID}" \
-              -F "random_id=${RANDOM_ID}" \
-              -F "message=${CAPTION}" \
-              -F "attachment=${ATTACHMENT}" \
-              -F "access_token=${VK_TOKEN}" \
-              -F "v=5.131")
-            
-            if echo "$SEND_RESULT" | grep -q '"error"'; then
-              echo "❌ Ошибка при отправке сообщения: $SEND_RESULT"
-            else
-              echo "✅ Отправлен: $filename"
-            fi
-            
-            rm -f "/tmp/clean_${filename}"
-          done
-          
-          # 3. Отправляем объединённый файл
-          echo "📦 Отправляем объединённый файл в беседу..."
-          FIRST_FILE="new_files/WhiteListsRusMobile_MostHelpful.txt"
-          DATE_CLEAN=$(grep -E '^# Date/Time:' "$FIRST_FILE" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
-          CAPTION_ALL="📅 Дата обновления: ${DATE_CLEAN} 📦 ВСЕ КОНФИГИ В ОДНОМ ФАЙЛЕ"
-          
-          {
-            for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
-              filepath="new_files/$filename"
-              if [ -f "$filepath" ]; then
-                tail -n +7 "$filepath"
-              fi
-            done
-          } > "/tmp/ALL_CONFIGS.txt"
-          
-          UPLOAD_URL_RESP_ALL=$(curl -s -X POST "https://api.vk.com/method/docs.getUploadServer?group_id=${VK_GROUP_ID}&access_token=${VK_TOKEN}&v=5.131")
-          if echo "$UPLOAD_URL_RESP_ALL" | grep -q '"error"'; then
-            echo "❌ Ошибка API: $UPLOAD_URL_RESP_ALL"
-          else
-            UPLOAD_URL_ALL=$(echo "$UPLOAD_URL_RESP_ALL" | jq -r '.response.upload_url')
-            UPLOAD_RESPONSE_ALL=$(curl -s -F "file=@/tmp/ALL_CONFIGS.txt" "$UPLOAD_URL_ALL")
-            SAVE_RESULT_ALL=$(curl -s -X POST "https://api.vk.com/method/docs.save" \
-              -F "file=${UPLOAD_RESPONSE_ALL}" \
-              -F "title=ALL_CONFIGS.txt" \
-              -F "access_token=${VK_TOKEN}" \
-              -F "v=5.131")
-            
-            if echo "$SAVE_RESULT_ALL" | grep -q '"error"'; then
-              echo "❌ Ошибка при сохранении объединённого файла: $SAVE_RESULT_ALL"
-            else
-              DOC_OWNER_ID_ALL=$(echo "$SAVE_RESULT_ALL" | jq -r '.response.doc.owner_id')
-              DOC_ID_ALL=$(echo "$SAVE_RESULT_ALL" | jq -r '.response.doc.id')
-              ATTACHMENT_ALL="doc${DOC_OWNER_ID_ALL}_${DOC_ID_ALL}"
-              RANDOM_ID_ALL=$(shuf -i 1-2147483647 -n 1)
-              SEND_RESULT_ALL=$(curl -s -X POST "https://api.vk.com/method/messages.send" \
-                -F "peer_id=${PEER_ID}" \
-                -F "random_id=${RANDOM_ID_ALL}" \
-                -F "message=${CAPTION_ALL}" \
-                -F "attachment=${ATTACHMENT_ALL}" \
-                -F "access_token=${VK_TOKEN}" \
-                -F "v=5.131")
-              
-              if echo "$SEND_RESULT_ALL" | grep -q '"error"'; then
-                echo "❌ Ошибка при отправке объединённого файла: $SEND_RESULT_ALL"
-              else
-                echo "✅ Отправлен объединённый файл"
-              fi
-            fi
-          fi
           rm -f "/tmp/ALL_CONFIGS.txt"
 
       # Сохраняем состояние
@@ -283,7 +129,7 @@ jobs:
         run: |
           cp new_checksum.txt last_checksum.txt
           git config user.name "github-actions[bot]"
-          git config.user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add last_checksum.txt
           [ -f "message_ids.txt" ] && git add message_ids.txt
           [ -f "sending.lock" ] && git add sending.lock
