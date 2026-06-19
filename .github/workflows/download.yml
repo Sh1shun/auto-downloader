@@ -1,191 +1,4 @@
-name: Download and send only changed configs
-
-on:
-  #schedule:
-  #  - cron: '*/15 * * * *'
-  workflow_dispatch:
-
-jobs:
-  check-and-send:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      # Скачиваем все файлы одной командой (параллельно)
-      - name: Download fresh files
-        run: |
-          mkdir -p new_files
-          curl -s --parallel --parallel-max 5 -L \
-            -o "new_files/WhiteListsRusMobile_MostHelpful.txt" \
-            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt" \
-            -o "new_files/WhiteListsRusMobile2.txt" \
-            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile-2.txt" \
-            -o "new_files/WhiteCidrRUAll.txt" \
-            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt" \
-            -o "new_files/WhiteCidrRUChecked.txt" \
-            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-checked.txt" \
-            -o "new_files/WhiteSNIRUAll.txt" \
-            "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-SNI-RU-all.txt"
-
-      # Контрольная сумма (оптимизировано)
-      - name: Calculate new checksum
-        id: hash
-        run: |
-          CHECKSUM=$(md5sum new_files/* | md5sum | cut -d' ' -f1)
-          echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
-          echo "$CHECKSUM" > new_checksum.txt
-
-      # Старый хеш
-      - name: Read old checksum
-        id: old
-        run: |
-          OLD=$(cat last_checksum.txt 2>/dev/null || echo "")
-          echo "checksum=$OLD" >> $GITHUB_OUTPUT
-
-      # Сравниваем
-      - name: Check for changes
-        id: diff
-        run: |
-          if [ "${{ steps.hash.outputs.checksum }}" != "${{ steps.old.outputs.checksum }}" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-
-      # Выход если нет изменений
-      - name: No changes
-        if: steps.diff.outputs.changed == 'false'
-        run: exit 0
-
-      # Блокировка (сокращена)
-      - name: Check lock
-        id: lock
-        if: steps.diff.outputs.changed == 'true'
-        run: |
-          if [ -f "sending.lock" ] && [ $(($(date +%s) - $(cat sending.lock))) -lt 900 ]; then
-            echo "locked=true" >> $GITHUB_OUTPUT
-          else
-            echo "locked=false" >> $GITHUB_OUTPUT
-            rm -f sending.lock
-          fi
-      
-      - name: Exit if locked
-        if: steps.lock.outputs.locked == 'true'
-        run: exit 0
-
-      - name: Set lock
-        if: steps.diff.outputs.changed == 'true'
-        run: date +%s > sending.lock
-
-      # Удаляем старые сообщения
-      - name: Delete old messages
-        if: steps.diff.outputs.changed == 'true'
-        env:
-          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          [ -f "message_ids.txt" ] && while read msg_id; do
-            curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/deleteMessage" \
-              -F "chat_id=${TG_CHAT_ID}" \
-              -F "message_id=${msg_id}" > /dev/null 2>&1
-          done < message_ids.txt
-          rm -f message_ids.txt
-
-      # Отправляем файлы (оптимизировано)
-      - name: Send new files
-        if: steps.diff.outputs.changed == 'true'
-        env:
-          TG_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          rm -f message_ids.txt
-          
-     
-          
-          # === 1. Отправляем каждый файл отдельно ===
-          for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
-            filepath="new_files/$filename"
-            [ ! -f "$filepath" ] && continue
-            
-            # Извлекаем дату за один проход
-            DATE_CLEAN=$(grep -E '^# Date/Time:' "$filepath" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
-            CAPTION="📅 Дата обновления: ${DATE_CLEAN:-$filename}"
-            
-            # Очищаем и отправляем
-            tail -n +7 "$filepath" > "/tmp/${filename}"
-            RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
-              -F "chat_id=${TG_CHAT_ID}" \
-              -F "document=@/tmp/${filename}" \
-              -F "caption=${CAPTION}")
-            
-            MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-            [ -n "$MSG_ID" ] && echo "$MSG_ID" >> message_ids.txt
-            
-            rm -f "/tmp/${filename}"
-          done
-               # === 2. Сначала создаём объединённый файл ===
-          # Извлекаем дату из первого файла (для подписи)
-          FIRST_FILE="new_files/WhiteListsRusMobile_MostHelpful.txt"
-          DATE_CLEAN=$(grep -E '^# Date/Time:' "$FIRST_FILE" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
-          CAPTION_ALL="📅 Дата обновления: ${DATE_CLEAN} (Все конфиги в одном файле)"
-          
-          # Объединяем все файлы (без первых 6 строк каждого)
-          {
-            for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
-              filepath="new_files/$filename"
-              if [ -f "$filepath" ]; then
-                tail -n +7 "$filepath"
-              fi
-            done
-          } > "/tmp/ALL_CONFIGS.txt"
-          
-          # Отправляем объединённый файл
-          RESPONSE_ALL=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
-            -F "chat_id=${TG_CHAT_ID}" \
-            -F "document=@/tmp/ALL_CONFIGS.txt" \
-            -F "caption=${CAPTION_ALL}")
-          
-          MSG_ID_ALL=$(echo "$RESPONSE_ALL" | grep -o '"message_id":[0-9]*' | head -1 | cut -d':' -f2)
-          [ -n "$MSG_ID_ALL" ] && echo "$MSG_ID_ALL" >> message_ids.txt
-          
-          rm -f "/tmp/ALL_CONFIGS.txt"
-
-    
-
-      - name: Get chat_id from VK API
-        env:
-          VK_TOKEN: ${{ secrets.VK_TOKEN }}
-        run: |
-          # Получаем список всех бесед, где есть бот
-          RESPONSE=$(curl -s "https://api.vk.com/method/messages.getConversations?access_token=${VK_TOKEN}&v=5.131&count=20&filter=all")
-          
-          # Выводим полный ответ для диагностики
-          echo "Ответ API:"
-          echo "$RESPONSE" | jq .
-          
-          # Ищем peer_id (будет 20000000XX)
-          PEER_ID=$(echo "$RESPONSE" | jq -r '.response.items[]? | select(.conversation.peer.type == "chat") | .conversation.peer.id' | head -1)
-          
-          if [ -n "$PEER_ID" ] && [ "$PEER_ID" != "null" ]; then
-            CHAT_ID=$((PEER_ID - 2000000000))
-            echo "✅ Найден peer_id: $PEER_ID"
-            echo "✅ chat_id для секрета VK_CHAT_ID: $CHAT_ID"
-            echo "VK_CHAT_ID=$CHAT_ID" >> $GITHUB_ENV
-          else
-            echo "❌ Беседа не найдена."
-            echo "Проверь:"
-            echo "1. Бот добавлен в беседу?"
-            echo "2. У токена есть право 'messages'?"
-            echo "3. Включены ли сообщения сообщества?"
-          fi
-
-            # === 3. ОТПРАВКА В БЕСЕДУ ВК (с проверками на ошибки) ===
+      # === 3. ОТПРАВКА В БЕСЕДУ ВК (с проверками на ошибки) ===
       - name: Send to VK Chat
         if: steps.diff.outputs.changed == 'true'
         env:
@@ -201,7 +14,32 @@ jobs:
           PEER_ID=$((2000000000 + VK_CHAT_ID))
           echo "✅ Peer_ID рассчитан: $PEER_ID"
 
-       
+          # 2. Отправляем каждый файл отдельно
+          for filename in "WhiteListsRusMobile_MostHelpful.txt" "WhiteListsRusMobile2.txt" "WhiteCidrRUAll.txt" "WhiteCidrRUChecked.txt" "WhiteSNIRUAll.txt"; do
+            filepath="new_files/$filename"
+            [ ! -f "$filepath" ] && continue
+            
+            DATE_CLEAN=$(grep -E '^# Date/Time:' "$filepath" | head -1 | sed 's/^# Date\/Time: //; s/^[ \t]*//;s/[ \t]*$//')
+            CAPTION="📅 Дата обновления: ${DATE_CLEAN:-$filename}"
+            
+            # Очищаем файл
+            tail -n +7 "$filepath" > "/tmp/clean_${filename}"
+            
+            # 2.1 Получаем URL для загрузки
+            echo "📤 Загружаем $filename..."
+            UPLOAD_URL_RESP=$(curl -s -X POST "https://api.vk.com/method/docs.getUploadServer?group_id=${VK_GROUP_ID}&access_token=${VK_TOKEN}&v=5.131")
+            
+            # Проверяем ответ на наличие ошибки
+            if echo "$UPLOAD_URL_RESP" | grep -q '"error"'; then
+              echo "❌ Ошибка API при получении upload_url: $UPLOAD_URL_RESP"
+              continue
+            fi
+            
+            UPLOAD_URL=$(echo "$UPLOAD_URL_RESP" | jq -r '.response.upload_url')
+            if [ -z "$UPLOAD_URL" ] || [ "$UPLOAD_URL" == "null" ]; then
+              echo "❌ Не удалось получить upload_url. Ответ: $UPLOAD_URL_RESP"
+              continue
+            fi
             
             # 2.2 Загружаем файл
             UPLOAD_RESPONSE=$(curl -s -F "file=@/tmp/clean_${filename}" "$UPLOAD_URL")
@@ -291,21 +129,3 @@ jobs:
             fi
           fi
           rm -f "/tmp/ALL_CONFIGS.txt"
-
-      # Сохраняем состояние
-      - name: Save state
-        if: steps.diff.outputs.changed == 'true'
-        run: |
-          cp new_checksum.txt last_checksum.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add last_checksum.txt
-          [ -f "message_ids.txt" ] && git add message_ids.txt
-          [ -f "sending.lock" ] && git add sending.lock
-          git commit -m "Update state [skip ci]" || true
-          git pull origin main --rebase --strategy-option=theirs || true
-          git push
-
-
-
-          
